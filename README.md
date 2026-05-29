@@ -86,6 +86,7 @@ func main() {
 	`
 
 	// Create a new pipeline
+    // The types of `input` and `output` are inferred by the Parser and Compiler.
 	processor := unipg.New(
         text.New(),          // Parser[string]
         []unipg.Transformer{
@@ -104,6 +105,5 @@ func main() {
 
     // Print the transformed SQL
     fmt.Println(output)
-    }
-    ```
+}
 ```
