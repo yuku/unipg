@@ -9,24 +9,24 @@ import (
 	"github.com/yuku/unipg"
 	"github.com/yuku/unipg/compilers/stringify"
 	"github.com/yuku/unipg/parsers/text"
+	"github.com/yuku/unipg/transformers/comment"
 	"github.com/yuku/unipg/transformers/extractfk"
 	"github.com/yuku/unipg/transformers/reorder"
 )
 
 func TestIntegration(t *testing.T) {
-	t.Parallel()
-
-	parser := text.New()
 	compiler := stringify.New()
 
-	testCases := []struct {
+	tests := []struct {
 		name         string
+		parser       unipg.Parser[string]
 		transformers []unipg.Transformer
 		input        string
 		want         string
 	}{
 		{
-			name: "basic passthrough",
+			name:   "basic passthrough",
+			parser: text.New(),
 			input: `
 				CREATE TABLE users (id INT PRIMARY KEY);
 			`,
@@ -35,7 +35,8 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
-			name: "multiple statements passthrough",
+			name:   "multiple statements passthrough",
+			parser: text.New(),
 			input: `
 				CREATE TABLE a (id int);
 				CREATE TABLE b (id int);
@@ -47,6 +48,7 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "extractfk: column-level",
+			parser:       text.New(),
 			transformers: []unipg.Transformer{extractfk.New()},
 			input: `
 				CREATE TABLE users (id INT PRIMARY KEY, team_id INT REFERENCES teams(id));
@@ -58,6 +60,7 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "reorder: view and table",
+			parser:       text.New(),
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `
 				CREATE VIEW v1 AS SELECT * FROM users;
@@ -70,6 +73,7 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "full pipeline: extractfk and reorder",
+			parser:       text.New(),
 			transformers: []unipg.Transformer{extractfk.New(), reorder.New()},
 			input: `
 				CREATE TABLE users (
@@ -88,6 +92,7 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "complex reordering: views with dependencies",
+			parser:       text.New(),
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `
 				CREATE VIEW v3 AS SELECT * FROM v2;
@@ -102,15 +107,33 @@ func TestIntegration(t *testing.T) {
 				CREATE VIEW v3 AS SELECT * FROM v2;
 			`,
 		},
+		{
+			name:         "comment transformer: table and view comments",
+			parser:       text.New(),
+			transformers: []unipg.Transformer{comment.New()},
+			input: `
+				/* users table */
+				CREATE TABLE users (id int);
+				
+				-- active users view
+				CREATE VIEW active_users AS SELECT * FROM users;
+			`,
+			want: `
+				CREATE TABLE users (id int);
+				COMMENT ON TABLE users IS 'users table';
+				CREATE VIEW active_users AS SELECT * FROM users;
+				COMMENT ON VIEW active_users IS 'active users view';
+			`,
+		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			processor := unipg.New(parser, tc.transformers, compiler)
-			got, err := processor.Process(tc.input)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor := unipg.New(tt.parser, tt.transformers, compiler)
+			got, err := processor.Process(tt.input)
 			require.NoError(t, err)
 
-			require.Equal(t, normalizeSQL(t, tc.want), normalizeSQL(t, got))
+			require.Equal(t, normalizeSQL(t, tt.want), normalizeSQL(t, got))
 		})
 	}
 }
