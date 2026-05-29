@@ -15,7 +15,7 @@ jobs:
     steps:
       - name: Request proxy.golang.org cache
         run: |
-          curl -X POST https://proxy.golang.org/github.com/yuku/unipg/@v/${{ github.event.release.tag_name }}.info
+          curl -fsS -X POST https://proxy.golang.org/github.com/yuku/unipg/@v/${{ github.event.release.tag_name }}.info
       - name: Request pkg.go.dev documentation update
         run: |
-          curl -X POST https://pkg.go.dev/fetch/github.com/yuku/unipg@${{ github.event.release.tag_name }}
+          curl -fsS -X POST https://pkg.go.dev/fetch/github.com/yuku/unipg@${{ github.event.release.tag_name }}
