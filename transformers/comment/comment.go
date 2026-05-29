@@ -31,23 +31,26 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 			continue
 		}
 
-		// 2. Try to attach pending comments to the current statement
+		// 2. Try to attach pending comments (top-level) to the current statement
 		if len(pendingComments) > 0 {
-			if targetStmt := t.getCommentTarget(rawStmt); targetStmt != nil {
-				formalComment := &pg_query.CommentStmt{
-					Objtype: targetStmt.objType,
-					Object:  targetStmt.object,
-					Comment: strings.Join(pendingComments, "\n"),
-				}
-
+			if target := t.getTopLevelTarget(rawStmt); target != nil {
 				processedStmts = append(processedStmts, rawStmt)
+
+				// Add top-level comment
 				processedStmts = append(processedStmts, &pg_query.RawStmt{
 					Stmt: &pg_query.Node{
 						Node: &pg_query.Node_CommentStmt{
-							CommentStmt: formalComment,
+							CommentStmt: &pg_query.CommentStmt{
+								Objtype: target.objType,
+								Object:  target.object,
+								Comment: strings.Join(pendingComments, "\n"),
+							},
 						},
 					},
 				})
+
+				// Process internal comments (columns) within this statement
+				processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
 
 				pendingComments = nil
 				continue
@@ -56,7 +59,9 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 			pendingComments = nil
 		}
 
+		// Add regular statement and its internal comments
 		processedStmts = append(processedStmts, rawStmt)
+		processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
 	}
 
 	tree.Stmts = processedStmts
@@ -68,7 +73,39 @@ type commentTarget struct {
 	object  *pg_query.Node
 }
 
-func (t *Transformer) getCommentTarget(rawStmt *pg_query.RawStmt) *commentTarget {
+func (t *Transformer) extractInternalComments(rawStmt *pg_query.RawStmt, allStmts []*pg_query.RawStmt) []*pg_query.RawStmt {
+	createStmt := rawStmt.Stmt.GetCreateStmt()
+	if createStmt == nil {
+		return nil
+	}
+
+	var results []*pg_query.RawStmt
+	stmtEnd := rawStmt.StmtLocation + rawStmt.StmtLen
+
+	for _, vNode := range allStmts {
+		// Only comments strictly INSIDE the statement range
+		if vNode.StmtLocation > rawStmt.StmtLocation && vNode.StmtLocation < stmtEnd {
+			if commentStmt := vNode.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
+				if colName := t.findPrecedingColumn(createStmt, vNode.StmtLocation); colName != "" {
+					results = append(results, &pg_query.RawStmt{
+						Stmt: &pg_query.Node{
+							Node: &pg_query.Node_CommentStmt{
+								CommentStmt: &pg_query.CommentStmt{
+									Objtype: pg_query.ObjectType_OBJECT_COLUMN,
+									Object:  t.columnToNode(createStmt.Relation, colName),
+									Comment: t.cleanComment(commentStmt.Comment),
+								},
+							},
+						},
+					})
+				}
+			}
+		}
+	}
+	return results
+}
+
+func (t *Transformer) getTopLevelTarget(rawStmt *pg_query.RawStmt) *commentTarget {
 	node := rawStmt.Stmt.GetNode()
 	if node == nil {
 		return nil
@@ -102,10 +139,41 @@ func (t *Transformer) getCommentTarget(rawStmt *pg_query.RawStmt) *commentTarget
 			objType: pg_query.ObjectType_OBJECT_TYPE,
 			object:  t.namesToNode(n.CreateEnumStmt.TypeName),
 		}
-	case *pg_query.Node_IndexStmt:
-		// Not typically commented via this transformer yet, but easily extensible
 	}
 	return nil
+}
+
+func (t *Transformer) findPrecedingColumn(stmt *pg_query.CreateStmt, location int32) string {
+	var lastCol string
+	var lastLoc int32 = -1
+	for _, elt := range stmt.TableElts {
+		if col := elt.GetColumnDef(); col != nil {
+			// In some cases location might be 0 for some nodes if not explicitly set
+			// by pg_query but Colname is always there.
+			if col.Location < location && col.Location > lastLoc {
+				lastCol = col.Colname
+				lastLoc = col.Location
+			}
+		}
+	}
+	return lastCol
+}
+
+func (t *Transformer) columnToNode(rv *pg_query.RangeVar, colName string) *pg_query.Node {
+	var items []*pg_query.Node
+	if rv.Schemaname != "" {
+		items = append(items, t.makeStringNode(rv.Schemaname))
+	}
+	items = append(items, t.makeStringNode(rv.Relname))
+	items = append(items, t.makeStringNode(colName))
+
+	return &pg_query.Node{
+		Node: &pg_query.Node_List{
+			List: &pg_query.List{
+				Items: items,
+			},
+		},
+	}
 }
 
 func (t *Transformer) rangeVarToNode(rv *pg_query.RangeVar) *pg_query.Node {
@@ -157,5 +225,57 @@ func (t *Transformer) cleanComment(s string) string {
 	} else if strings.HasPrefix(s, "--") {
 		s = s[2:]
 	}
-	return strings.TrimSpace(s)
+	return dedent(s)
+}
+
+func dedent(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 1 {
+		return strings.TrimSpace(s)
+	}
+
+	// Remove leading/trailing empty lines
+	start := 0
+	for ; start < len(lines) && strings.TrimSpace(lines[start]) == ""; start++ {
+	}
+	end := len(lines)
+	for ; end > start && strings.TrimSpace(lines[end-1]) == ""; end-- {
+	}
+	lines = lines[start:end]
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Find minimum indentation
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := 0
+		for _, r := range line {
+			if r == ' ' || r == '\t' {
+				indent++
+			} else {
+				break
+			}
+		}
+		if minIndent == -1 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+
+	if minIndent <= 0 {
+		return strings.Join(lines, "\n")
+	}
+
+	// Remove indent
+	for i, line := range lines {
+		if len(line) >= minIndent {
+			lines[i] = line[minIndent:]
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }

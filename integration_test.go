@@ -138,6 +138,28 @@ func TestIntegration(t *testing.T) {
 				COMMENT ON VIEW active_users IS 'active users view';
 			`,
 		},
+		{
+			name:         "comment transformer: multi-line and column comments",
+			parser:       text.New(),
+			transformers: []unipg.Transformer{comment.New()},
+			input: dedent(`
+				/* 
+				   Multi-line
+				   table comment
+				*/
+				CREATE TABLE users (
+					id int, -- user ID
+					name text /* user name */
+				);
+			`),
+			want: dedent(`
+				CREATE TABLE users (id int, name text);
+				COMMENT ON TABLE users IS 'Multi-line
+				table comment';
+				COMMENT ON COLUMN users.id IS 'user ID';
+				COMMENT ON COLUMN users.name IS 'user name';
+			`),
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,8 +177,50 @@ func TestIntegration(t *testing.T) {
 func normalizeSQL(t *testing.T, s string) string {
 	t.Helper()
 	result, err := pg_query.Parse(s)
-	require.NoError(t, err, "failed to parse SQL for normalization")
+	require.NoError(t, err, "failed to parse SQL for normalization: %s", s)
 	out, err := pg_query.Deparse(result)
 	require.NoError(t, err, "failed to deparse SQL for normalization")
 	return strings.TrimSpace(out)
+}
+
+// dedent removes the common leading whitespace from every line in s.
+func dedent(s string) string {
+	s = strings.TrimPrefix(s, "\n")
+	s = strings.TrimSuffix(s, "\n")
+	lines := strings.Split(s, "\n")
+	if len(lines) == 0 {
+		return s
+	}
+
+	// Find minimum indentation
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := 0
+		for _, r := range line {
+			if r == ' ' || r == '\t' {
+				indent++
+			} else {
+				break
+			}
+		}
+		if minIndent == -1 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+
+	if minIndent <= 0 {
+		return s
+	}
+
+	// Remove indent
+	for i, line := range lines {
+		if len(line) >= minIndent {
+			lines[i] = line[minIndent:]
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
