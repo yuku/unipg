@@ -162,6 +162,23 @@ func TestIntegration(t *testing.T) {
 			`),
 		},
 		{
+			name:         "comment transformer: multi-line without asterisks",
+			parser:       text.New(),
+			transformers: []unipg.Transformer{comment.New()},
+			input: dedent(`
+				/**
+				  Multi-line comment
+				  without leading asterisks
+				*/
+				CREATE TABLE users (id int);
+			`),
+			want: dedent(`
+				CREATE TABLE users (id int);
+				COMMENT ON TABLE users IS 'Multi-line comment
+				without leading asterisks';
+			`),
+		},
+		{
 			name:         "ignore non-doc comments",
 			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
