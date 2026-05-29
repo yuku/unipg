@@ -36,7 +36,10 @@ import (
 
 func main() {
 	input := `
-        /** This is a comment that should be converted to a DDL comment on the users table */
+        /** 
+         * This is a comment that should be converted 
+         * to a DDL comment on the users table 
+         */
 		CREATE TABLE users (
             /** This is a comment that should be converted to a DDL comment on the id column */
 			id INT PRIMARY KEY,
