@@ -1,3 +1,6 @@
+## Mandates
+- **No Automatic Commits:** NEVER stage, commit, or push changes unless explicitly instructed by the user in the current turn. Always wait for approval before performing any git mutation.
+
 ## Project Context
 - **Name:** `unipg` (unified.js for PostgreSQL DDL)
 - **Language:** Go (1.25+)
