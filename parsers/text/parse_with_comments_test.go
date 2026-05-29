@@ -10,7 +10,7 @@ import (
 func TestParser_Parse_Comments(t *testing.T) {
 	t.Run("comments enabled by default", func(t *testing.T) {
 		p := New()
-		input := "/* comment */ CREATE TABLE users (id int);"
+		input := "/** comment */ CREATE TABLE users (id int);"
 		result, err := p.Parse(input)
 		require.NoError(t, err)
 
@@ -19,7 +19,7 @@ func TestParser_Parse_Comments(t *testing.T) {
 
 		c1 := result.Stmts[0].Stmt.GetCommentStmt()
 		require.NotNil(t, c1)
-		require.Equal(t, "/* comment */", c1.Comment)
+		require.Equal(t, "/** comment */", c1.Comment)
 		require.Equal(t, pg_query.ObjectType_OBJECT_TYPE_UNDEFINED, c1.Objtype)
 
 		require.NotNil(t, result.Stmts[1].Stmt.GetCreateStmt())

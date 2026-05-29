@@ -13,7 +13,7 @@ func TestTransformer_Transform(t *testing.T) {
 	transformer := New()
 
 	t.Run("table comment", func(t *testing.T) {
-		input := "/* users table */ CREATE TABLE users (id int);"
+		input := "/** users table */ CREATE TABLE users (id int);"
 		result, err := parser.Parse(input)
 		require.NoError(t, err)
 
@@ -31,7 +31,7 @@ func TestTransformer_Transform(t *testing.T) {
 	})
 
 	t.Run("view comment", func(t *testing.T) {
-		input := "-- user view\nCREATE VIEW v1 AS SELECT 1;"
+		input := "/** user view */\nCREATE VIEW v1 AS SELECT 1;"
 		result, err := parser.Parse(input)
 		require.NoError(t, err)
 
@@ -45,7 +45,7 @@ func TestTransformer_Transform(t *testing.T) {
 	})
 
 	t.Run("merged comments", func(t *testing.T) {
-		input := "/* line 1 */ -- line 2\nCREATE TABLE t1 (id int);"
+		input := "/** line 1 */ /** line 2 */\nCREATE TABLE t1 (id int);"
 		result, err := parser.Parse(input)
 		require.NoError(t, err)
 
@@ -57,7 +57,7 @@ func TestTransformer_Transform(t *testing.T) {
 	})
 
 	t.Run("discard comment for unsupported target", func(t *testing.T) {
-		input := "/* index comment */ CREATE INDEX idx1 ON t1(id); CREATE TABLE t1 (id int);"
+		input := "/** index comment */ CREATE INDEX idx1 ON t1(id); CREATE TABLE t1 (id int);"
 		result, err := parser.Parse(input)
 		require.NoError(t, err)
 
@@ -72,7 +72,7 @@ func TestTransformer_Transform(t *testing.T) {
 	})
 
 	t.Run("unattached comment (no target)", func(t *testing.T) {
-		input := "CREATE TABLE t1 (id int); /* end comment */"
+		input := "CREATE TABLE t1 (id int); /** end comment */"
 		result, err := parser.Parse(input)
 		require.NoError(t, err)
 
