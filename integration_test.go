@@ -16,17 +16,17 @@ import (
 
 func TestIntegration(t *testing.T) {
 	compiler := stringify.New()
+	defaultParser := text.New()
 
 	tests := []struct {
 		name         string
-		parser       unipg.Parser[string]
+		parser       unipg.Parser[string] // Optional override
 		transformers []unipg.Transformer
 		input        string
 		want         string
 	}{
 		{
-			name:   "basic passthrough",
-			parser: text.New(),
+			name: "basic passthrough",
 			input: `
 				CREATE TABLE users (id INT PRIMARY KEY);
 			`,
@@ -35,8 +35,7 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
-			name:   "multiple statements passthrough",
-			parser: text.New(),
+			name: "multiple statements passthrough",
 			input: `
 				CREATE TABLE a (id int);
 				CREATE TABLE b (id int);
@@ -48,7 +47,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "extractfk: column-level",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{extractfk.New()},
 			input: `
 				CREATE TABLE users (id INT PRIMARY KEY, team_id INT REFERENCES teams(id));
@@ -60,7 +58,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "reorder: view and table",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `
 				CREATE VIEW v1 AS SELECT * FROM users;
@@ -73,7 +70,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "full pipeline: extractfk and reorder",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{extractfk.New(), reorder.New()},
 			input: `
 				CREATE TABLE users (
@@ -92,7 +88,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "complex reordering: views with dependencies",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `
 				CREATE VIEW v3 AS SELECT * FROM v2;
@@ -108,10 +103,7 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
-			name:   "comments present but no comment transformer",
-			parser: text.New(),
-			// Note: no comment transformer here
-			transformers: nil,
+			name: "comments present but no comment transformer",
 			input: `
 				/** this comment should be ignored or safely handled */
 				CREATE TABLE users (id int);
@@ -122,7 +114,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "comment transformer: table and view comments",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: `
 				/** users table */
@@ -140,7 +131,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "comment transformer: JSDoc style and column comments",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: dedent(`
 				/**
@@ -163,7 +153,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "comment transformer: multi-line without asterisks",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: dedent(`
 				/**
@@ -180,7 +169,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			name:         "ignore non-doc comments",
-			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: `
 				/* regular comment */
@@ -191,11 +179,27 @@ func TestIntegration(t *testing.T) {
 				CREATE TABLE users (id int);
 			`,
 		},
+		{
+			name:         "WithoutComments with comment transformer",
+			parser:       text.New(text.WithoutComments()),
+			transformers: []unipg.Transformer{comment.New()},
+			input: `
+				/** this comment should be ignored because parser excludes it */
+				CREATE TABLE users (id int);
+			`,
+			want: `
+				CREATE TABLE users (id int);
+			`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			processor := unipg.New(tt.parser, tt.transformers, compiler)
+			p := tt.parser
+			if p == nil {
+				p = defaultParser
+			}
+			processor := unipg.New(p, tt.transformers, compiler)
 			got, err := processor.Process(tt.input)
 			require.NoError(t, err)
 
