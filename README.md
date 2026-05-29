@@ -1,5 +1,7 @@
 # unipg
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/yuku/unipg.svg)](https://pkg.go.dev/github.com/yuku/unipg)
+
 `unipg` is a strongly-typed, plugin-based text processing interface for PostgreSQL DDL, inspired by [unified.js](https://unifiedjs.com/). 
 
 It parses PostgreSQL SQL into an Abstract Syntax Tree (AST) using [pg_query_go](https://github.com/pganalyze/pg_query_go), applies a pipeline of user-defined plugins (transformers) to mutate the AST, and compiles the result back into the desired output format.
