@@ -13,11 +13,46 @@ Managing complex SQL DDL files often involves manual formatting, resolving depen
 - **PostgreSQL Native:** Exclusively designed for PostgreSQL AST.
 - **Type-Safe Pipeline:** Leverages Go Generics to infer Input and Output types based on the selected Parser and Compiler.
 - **Plugin Architecture (DIP):** Core interfaces are defined in the root, making it easy to plug in custom implementations. Build custom pipelines using the `Parse -> Transform -> Compile` paradigm.
-- **Go-Native:** Compile your own custom DDL processor as a fast, single binary.
+- **Go-Native:** Fast execution with minimal dependencies.
 
-## Usage
+## CLI
 
-`unipg` is designed to be used as a Go library to build your own CLI tools.
+`unipg` provides a command-line tool that applies a standard set of transformations to your DDL. 
+
+By default, the CLI enables:
+- **comment**: Converts `/** ... */` doc-style comments into formal `COMMENT ON` statements.
+- **extractfk**: Extracts inline foreign keys from `CREATE TABLE` to standalone `ALTER TABLE` statements.
+- **reorder**: Moves `ALTER TABLE` and `CREATE VIEW` statements to the end of the document, ensuring correct dependency order.
+
+### Running without installation
+
+You can process SQL files instantly using `go run`:
+
+```bash
+# Process a file
+go run github.com/yuku/unipg/cmd/unipg@latest schema.sql > output.sql
+
+# Read from stdin
+cat schema.sql | go run github.com/yuku/unipg/cmd/unipg@latest - > output.sql
+```
+
+### Installation
+
+To install the `unipg` binary to your `$GOPATH/bin`:
+
+```bash
+go install github.com/yuku/unipg/cmd/unipg@latest
+```
+
+Once installed, you can use it simply as:
+
+```bash
+unipg schema.sql
+```
+
+## Library Usage
+
+You can also use `unipg` as a Go library to build custom DDL processing pipelines.
 
 ```go
 package main
@@ -51,7 +86,6 @@ func main() {
 	`
 
 	// Create a new pipeline
-    // The types of `input` and `output` are inferred by the Parser and Compiler.
 	processor := unipg.New(
         text.New(),          // Parser[string]
         []unipg.Transformer{
@@ -69,18 +103,7 @@ func main() {
 	}
 
     // Print the transformed SQL
-    // ```sql
-    // CREATE TABLE teams (
-    //     id INT PRIMARY KEY
-    // );
-    // CREATE TABLE users (
-    //     id INT PRIMARY KEY,
-    //     team_id INT
-    // );
-    // COMMENT ON TABLE users IS 'This is a comment that should be converted to a DDL comment on the users table';
-    // COMMENT ON COLUMN users.id IS 'This is a comment that should be converted to a DDL comment on the id column';
-    // ALTER TABLE users ADD FOREIGN KEY (team_id) REFERENCES teams(id);
-    // ```
-	fmt.Println(output)
-}
+    fmt.Println(output)
+    }
+    ```
 ```
