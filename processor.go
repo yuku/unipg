@@ -47,10 +47,10 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 	var zero O
 
 	if p.parser == nil {
-		return zero, errors.New("parser is not initialized")
+		return zero, errors.New("parser is nil")
 	}
 	if p.compiler == nil {
-		return zero, errors.New("compiler is not initialized")
+		return zero, errors.New("compiler is nil")
 	}
 
 	// 1. Parse
@@ -75,7 +75,7 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 	// 3. Compile
 	out, err := p.compiler.Compile(ast)
 	if err != nil {
-		return zero, fmt.Errorf("Compiling AST: %w", err)
+		return zero, fmt.Errorf("compiling AST: %w", err)
 	}
 	return out, nil
 }

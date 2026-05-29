@@ -65,21 +65,21 @@ func TestProcessor_Process(t *testing.T) {
 
 		_, err := processor.Process("input")
 		require.ErrorIs(t, err, errStringify)
-		require.Contains(t, err.Error(), "stringifying AST")
+		require.Contains(t, err.Error(), "compiling AST")
 	})
 
 	t.Run("nil parser error", func(t *testing.T) {
 		processor := New[string, string](nil, nil, &mockCompiler{})
 		_, err := processor.Process("input")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "parser is not initialized")
+		require.Contains(t, err.Error(), "parser is nil")
 	})
 
 	t.Run("nil compiler error", func(t *testing.T) {
 		processor := New[string, string](&mockParser{result: &pg_query.ParseResult{}}, nil, nil)
 		_, err := processor.Process("input")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "compiler is not initialized")
+		require.Contains(t, err.Error(), "compiler is nil")
 	})
 
 	t.Run("parser returns nil result", func(t *testing.T) {
