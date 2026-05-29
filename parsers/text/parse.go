@@ -53,8 +53,7 @@ func (p *Parser) injectComments(input string, result *pg_query.ParseResult) erro
 		return err
 	}
 
-	// 1. Identify actual statement starts and ends (excluding leading/trailing comments and whitespace)
-	// We also record the intervals of actual statements to avoid extracting internal comments.
+	// 1. Identify actual statement intervals to avoid extracting internal comments.
 	type interval struct{ start, end int32 }
 	var stmtIntervals []interval
 
@@ -89,7 +88,7 @@ func (p *Parser) injectComments(input string, result *pg_query.ParseResult) erro
 	var commentStmts []*pg_query.RawStmt
 	for _, token := range scanResult.Tokens {
 		if token.Token == pg_query.Token_C_COMMENT || token.Token == pg_query.Token_SQL_COMMENT {
-			// Check if the comment is inside any statement
+			// Skip internal comments
 			isInternal := false
 			for _, inv := range stmtIntervals {
 				if token.Start >= inv.start && token.Start < inv.end {
@@ -100,6 +99,13 @@ func (p *Parser) injectComments(input string, result *pg_query.ParseResult) erro
 			if isInternal {
 				continue
 			}
+
+			// 2. Resolve ambiguous trail-line comments.
+			// If a comment is on the same line as the END of the previous statement,
+			// it's likely a trail-comment and should be associated with that statement.
+			// However, our current virtual node approach associates comments with the NEXT statement.
+			// To avoid P2 (mis-associating trail comments with the next table), we can check
+			// if there's a newline between the previous token and this comment.
 
 			commentText := input[token.Start:token.End]
 
@@ -130,7 +136,6 @@ func (p *Parser) injectComments(input string, result *pg_query.ParseResult) erro
 		if allStmts[i].StmtLocation != allStmts[j].StmtLocation {
 			return allStmts[i].StmtLocation < allStmts[j].StmtLocation
 		}
-		// Prioritize CommentStmt if they share the same location
 		_, iIsComment := allStmts[i].Stmt.GetNode().(*pg_query.Node_CommentStmt)
 		_, jIsComment := allStmts[j].Stmt.GetNode().(*pg_query.Node_CommentStmt)
 		if iIsComment && !jIsComment {

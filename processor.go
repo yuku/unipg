@@ -73,12 +73,27 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 		}
 	}
 
-	// 3. Compile
+	// 3. Cleanup virtual nodes before compilation to avoid deparser crashes
+	p.cleanupVirtualNodes(ast)
+
+	// 4. Compile
 	out, err := p.compiler.Compile(ast)
 	if err != nil {
 		return zero, fmt.Errorf("compiling AST: %w", err)
 	}
 	return out, nil
+}
+
+func (p *Processor[I, O]) cleanupVirtualNodes(tree *pg_query.ParseResult) {
+	var cleanStmts []*pg_query.RawStmt
+	for _, rawStmt := range tree.Stmts {
+		// OBJECT_TYPE_UNDEFINED is used for virtual comment nodes that must not reach the deparser
+		if commentStmt := rawStmt.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
+			continue
+		}
+		cleanStmts = append(cleanStmts, rawStmt)
+	}
+	tree.Stmts = cleanStmts
 }
 
 // isNil checks if an interface value is nil or contains a nil pointer.

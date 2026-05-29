@@ -69,25 +69,41 @@ type commentTarget struct {
 }
 
 func (t *Transformer) getCommentTarget(rawStmt *pg_query.RawStmt) *commentTarget {
-	if createStmt := rawStmt.Stmt.GetCreateStmt(); createStmt != nil {
+	node := rawStmt.Stmt.GetNode()
+	if node == nil {
+		return nil
+	}
+
+	switch n := node.(type) {
+	case *pg_query.Node_CreateStmt:
 		return &commentTarget{
 			objType: pg_query.ObjectType_OBJECT_TABLE,
-			object:  t.rangeVarToNode(createStmt.Relation),
+			object:  t.rangeVarToNode(n.CreateStmt.Relation),
 		}
-	}
-	if viewStmt := rawStmt.Stmt.GetViewStmt(); viewStmt != nil {
+	case *pg_query.Node_ViewStmt:
 		return &commentTarget{
 			objType: pg_query.ObjectType_OBJECT_VIEW,
-			object:  t.rangeVarToNode(viewStmt.View),
+			object:  t.rangeVarToNode(n.ViewStmt.View),
 		}
-	}
-	if matViewStmt := rawStmt.Stmt.GetCreateTableAsStmt(); matViewStmt != nil && matViewStmt.Objtype == pg_query.ObjectType_OBJECT_MATVIEW {
-		if matViewStmt.Into != nil {
+	case *pg_query.Node_CreateTableAsStmt:
+		if n.CreateTableAsStmt.Objtype == pg_query.ObjectType_OBJECT_MATVIEW && n.CreateTableAsStmt.Into != nil {
 			return &commentTarget{
 				objType: pg_query.ObjectType_OBJECT_MATVIEW,
-				object:  t.rangeVarToNode(matViewStmt.Into.Rel),
+				object:  t.rangeVarToNode(n.CreateTableAsStmt.Into.Rel),
 			}
 		}
+	case *pg_query.Node_CompositeTypeStmt:
+		return &commentTarget{
+			objType: pg_query.ObjectType_OBJECT_TYPE,
+			object:  t.rangeVarToNode(n.CompositeTypeStmt.Typevar),
+		}
+	case *pg_query.Node_CreateEnumStmt:
+		return &commentTarget{
+			objType: pg_query.ObjectType_OBJECT_TYPE,
+			object:  t.namesToNode(n.CreateEnumStmt.TypeName),
+		}
+	case *pg_query.Node_IndexStmt:
+		// Not typically commented via this transformer yet, but easily extensible
 	}
 	return nil
 }
@@ -106,6 +122,19 @@ func (t *Transformer) rangeVarToNode(rv *pg_query.RangeVar) *pg_query.Node {
 		Node: &pg_query.Node_List{
 			List: &pg_query.List{
 				Items: items,
+			},
+		},
+	}
+}
+
+func (t *Transformer) namesToNode(names []*pg_query.Node) *pg_query.Node {
+	if len(names) == 0 {
+		return nil
+	}
+	return &pg_query.Node{
+		Node: &pg_query.Node_List{
+			List: &pg_query.List{
+				Items: names,
 			},
 		},
 	}

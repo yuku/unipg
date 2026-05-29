@@ -108,6 +108,19 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
+			name:   "comments present but no comment transformer",
+			parser: text.New(),
+			// Note: no comment transformer here
+			transformers: nil,
+			input: `
+				/* this comment should be ignored or safely handled */
+				CREATE TABLE users (id int);
+			`,
+			want: `
+				CREATE TABLE users (id int);
+			`,
+		},
+		{
 			name:         "comment transformer: table and view comments",
 			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
