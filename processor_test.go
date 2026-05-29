@@ -9,6 +9,8 @@ import (
 )
 
 func TestProcessor_Process(t *testing.T) {
+	t.Parallel()
+
 	t.Run("successful passthrough without transformers", func(t *testing.T) {
 		parser := &mockParser{result: &pg_query.ParseResult{}}
 		compiler := &mockCompiler{result: "output"}

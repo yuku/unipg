@@ -18,6 +18,7 @@
 2. **Testing:** - Use the standard `testing` package.
    - Use `github.com/stretchr/testify/require` strictly for assertions.
    - Write tests for every AST transformation plugin to ensure they handle edge cases cleanly.
+   - Use `t.Parallel()` in tests to speed up the test suite, especially for independent test cases.
 3. **Error Handling:** - Use `fmt.Errorf` to wrap errors with context (e.g., `fmt.Errorf("parsing sql: %w", err)`).
    - Ensure errors are propagated up the pipeline cleanly.
    - Use `errors.New` for errors that do not require wrapping.
