@@ -8,6 +8,8 @@ import (
 )
 
 func TestTransformer_Transform(t *testing.T) {
+	t.Parallel()
+
 	transformer := New()
 
 	t.Run("extract column-level foreign key", func(t *testing.T) {

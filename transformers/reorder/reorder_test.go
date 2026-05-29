@@ -8,6 +8,8 @@ import (
 )
 
 func TestTransformer_Transform(t *testing.T) {
+	t.Parallel()
+
 	transformer := New()
 
 	t.Run("basic reordering", func(t *testing.T) {
