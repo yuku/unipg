@@ -81,4 +81,32 @@ func TestTransformer_Transform(t *testing.T) {
 
 		require.Len(t, result.Stmts, 1)
 	})
+
+	t.Run("column comment does not leak to next statement", func(t *testing.T) {
+		input := dedent(`
+			CREATE TABLE users (
+				id int /** user ID */
+			);
+			CREATE VIEW active_users AS SELECT * FROM users;
+		`)
+		result, err := parser.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected 4 statements:
+		// [0] CREATE TABLE
+		// [1] COMMENT ON COLUMN users.id
+		// [2] CREATE VIEW
+		// (No comment on view)
+		require.Len(t, result.Stmts, 3)
+		require.NotNil(t, result.Stmts[0].Stmt.GetCreateStmt())
+
+		c1 := result.Stmts[1].Stmt.GetCommentStmt()
+		require.Equal(t, pg_query.ObjectType_OBJECT_COLUMN, c1.Objtype)
+		require.Equal(t, "user ID", c1.Comment)
+
+		require.NotNil(t, result.Stmts[2].Stmt.GetViewStmt())
+	})
 }

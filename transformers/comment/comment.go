@@ -19,11 +19,32 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var processedStmts []*pg_query.RawStmt
 	var pendingComments []string
 
+	// Track locations of comments that are inside a statement (columns)
+	// to avoid re-queuing them as top-level comments.
+	internalCommentLocs := make(map[int32]bool)
+	for _, rawStmt := range tree.Stmts {
+		if createStmt := rawStmt.Stmt.GetCreateStmt(); createStmt != nil {
+			stmtEnd := rawStmt.StmtLocation + rawStmt.StmtLen
+			for _, vNode := range tree.Stmts {
+				if vNode.StmtLocation > rawStmt.StmtLocation && vNode.StmtLocation < stmtEnd {
+					if commentStmt := vNode.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
+						internalCommentLocs[vNode.StmtLocation] = true
+					}
+				}
+			}
+		}
+	}
+
 	for i := 0; i < len(tree.Stmts); i++ {
 		rawStmt := tree.Stmts[i]
 
 		// 1. Check if it's a virtual comment node
 		if commentStmt := rawStmt.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
+			// Skip comments that are already processed as internal (column) comments
+			if internalCommentLocs[rawStmt.StmtLocation] {
+				continue
+			}
+
 			commentText := t.cleanComment(commentStmt.Comment)
 			if commentText != "" {
 				pendingComments = append(pendingComments, commentText)
@@ -31,10 +52,7 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 			continue
 		}
 
-		// 2. Extract internal comments (columns) within this statement
-		internalComments := t.extractInternalComments(rawStmt, tree.Stmts)
-
-		// 3. Try to attach pending comments (top-level) to the current statement
+		// 2. Try to attach pending comments (top-level) to the current statement
 		if len(pendingComments) > 0 {
 			if target := t.getTopLevelTarget(rawStmt); target != nil {
 				processedStmts = append(processedStmts, rawStmt)
@@ -52,8 +70,8 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 					},
 				})
 
-				// Add internal comments
-				processedStmts = append(processedStmts, internalComments...)
+				// Add internal comments (columns) within this statement
+				processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
 
 				pendingComments = nil
 				continue
@@ -64,7 +82,7 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 
 		// Add regular statement and its internal comments
 		processedStmts = append(processedStmts, rawStmt)
-		processedStmts = append(processedStmts, internalComments...)
+		processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
 	}
 
 	tree.Stmts = processedStmts
@@ -89,6 +107,11 @@ func (t *Transformer) extractInternalComments(rawStmt *pg_query.RawStmt, allStmt
 		// Only comments strictly INSIDE the statement range
 		if vNode.StmtLocation > rawStmt.StmtLocation && vNode.StmtLocation < stmtEnd {
 			if commentStmt := vNode.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
+				cleaned := t.cleanComment(commentStmt.Comment)
+				if cleaned == "" {
+					continue
+				}
+
 				if colName := t.findTargetColumn(createStmt, vNode.StmtLocation); colName != "" {
 					results = append(results, &pg_query.RawStmt{
 						Stmt: &pg_query.Node{
@@ -96,7 +119,7 @@ func (t *Transformer) extractInternalComments(rawStmt *pg_query.RawStmt, allStmt
 								CommentStmt: &pg_query.CommentStmt{
 									Objtype: pg_query.ObjectType_OBJECT_COLUMN,
 									Object:  t.columnToNode(createStmt.Relation, colName),
-									Comment: t.cleanComment(commentStmt.Comment),
+									Comment: cleaned,
 								},
 							},
 						},
@@ -147,11 +170,6 @@ func (t *Transformer) getTopLevelTarget(rawStmt *pg_query.RawStmt) *commentTarge
 }
 
 func (t *Transformer) findTargetColumn(stmt *pg_query.CreateStmt, location int32) string {
-	// 1. Check if the comment is BEFORE any column (leads to association with the table, usually handled by top-level)
-	// 2. Check if the comment is AFTER a column but BEFORE the next one (association with the preceding column)
-	// 3. Check if the comment is BEFORE a column but AFTER the previous one (association with the subsequent column)
-
-	// Implementation: find the column whose location is closest to this comment.
 	var bestCol string
 	var minDiff int32 = -1
 
