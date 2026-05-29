@@ -9,6 +9,7 @@ import (
 	"github.com/yuku/unipg/compilers/stringify"
 	"github.com/yuku/unipg/parsers/text"
 	"github.com/yuku/unipg/transformers/extractfk"
+	"github.com/yuku/unipg/transformers/reorder"
 )
 
 func TestIntegration_ParseCompile(t *testing.T) {
@@ -50,8 +51,47 @@ func TestIntegration_ParseCompile(t *testing.T) {
 		require.Contains(t, normalizedOutput, "CREATE TABLE USERS")
 		require.Contains(t, normalizedOutput, "ALTER TABLE USERS")
 		require.Contains(t, normalizedOutput, "ADD FOREIGN KEY (TEAM_ID) REFERENCES TEAMS (ID)")
-		// The inline reference should be removed from CREATE TABLE
-		// Since deparse output might vary, we check that team_id doesn't have REFERENCES anymore
-		// but simple substring check is hard. Let's just verify the standalone ALTER TABLE exists.
+	})
+
+	t.Run("reorder transformer", func(t *testing.T) {
+		processor := unipg.New(parser, []unipg.Transformer{reorder.New()}, compiler)
+		input := "CREATE VIEW v1 AS SELECT * FROM users; CREATE TABLE users (id INT);"
+		output, err := processor.Process(input)
+		require.NoError(t, err)
+
+		normalizedOutput := strings.ToUpper(output)
+		// CREATE TABLE should come before CREATE VIEW
+		tablePos := strings.Index(normalizedOutput, "CREATE TABLE USERS")
+		viewPos := strings.Index(normalizedOutput, "CREATE VIEW V1")
+		require.True(t, tablePos < viewPos, "Table should be defined before view")
+	})
+
+	t.Run("full pipeline (extractfk + reorder)", func(t *testing.T) {
+		processor := unipg.New(parser, []unipg.Transformer{
+			extractfk.New(),
+			reorder.New(),
+		}, compiler)
+
+		input := `
+			CREATE TABLE users (
+				id INT PRIMARY KEY,
+				team_id INT REFERENCES teams(id)
+			);
+			CREATE TABLE teams (
+				id INT PRIMARY KEY
+			);
+		`
+		output, err := processor.Process(input)
+		require.NoError(t, err)
+
+		normalizedOutput := strings.ToUpper(output)
+		// Order should be: CREATE TABLE users, CREATE TABLE teams, ALTER TABLE users
+		// (Actually, reorder moves all ALTER to the very end)
+		usersTablePos := strings.Index(normalizedOutput, "CREATE TABLE USERS")
+		teamsTablePos := strings.Index(normalizedOutput, "CREATE TABLE TEAMS")
+		alterPos := strings.Index(normalizedOutput, "ALTER TABLE USERS")
+
+		require.True(t, usersTablePos < alterPos)
+		require.True(t, teamsTablePos < alterPos)
 	})
 }
