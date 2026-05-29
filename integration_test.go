@@ -113,7 +113,7 @@ func TestIntegration(t *testing.T) {
 			// Note: no comment transformer here
 			transformers: nil,
 			input: `
-				/* this comment should be ignored or safely handled */
+				/** this comment should be ignored or safely handled */
 				CREATE TABLE users (id int);
 			`,
 			want: `
@@ -125,10 +125,10 @@ func TestIntegration(t *testing.T) {
 			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: `
-				/* users table */
+				/** users table */
 				CREATE TABLE users (id int);
 				
-				-- active users view
+				/** active users view */
 				CREATE VIEW active_users AS SELECT * FROM users;
 			`,
 			want: `
@@ -139,26 +139,40 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
-			name:         "comment transformer: multi-line and column comments",
+			name:         "comment transformer: JSDoc style and column comments",
 			parser:       text.New(),
 			transformers: []unipg.Transformer{comment.New()},
 			input: dedent(`
-				/* 
-				   Multi-line
-				   table comment
-				*/
+				/**
+				 * first line
+				 * second line
+				 */
 				CREATE TABLE users (
-					id int, -- user ID
-					name text /* user name */
+					/** user ID */
+					id int,
+					name text /** user name */
 				);
 			`),
 			want: dedent(`
 				CREATE TABLE users (id int, name text);
-				COMMENT ON TABLE users IS 'Multi-line
-				table comment';
+				COMMENT ON TABLE users IS 'first line
+				second line';
 				COMMENT ON COLUMN users.id IS 'user ID';
 				COMMENT ON COLUMN users.name IS 'user name';
 			`),
+		},
+		{
+			name:         "ignore non-doc comments",
+			parser:       text.New(),
+			transformers: []unipg.Transformer{comment.New()},
+			input: `
+				/* regular comment */
+				-- line comment
+				CREATE TABLE users (id int);
+			`,
+			want: `
+				CREATE TABLE users (id int);
+			`,
 		},
 	}
 

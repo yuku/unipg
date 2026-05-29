@@ -3,6 +3,7 @@ package text
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
@@ -84,8 +85,11 @@ func (p *Parser) injectComments(input string, result *pg_query.ParseResult) erro
 
 	var commentStmts []*pg_query.RawStmt
 	for _, token := range scanResult.Tokens {
-		if token.Token == pg_query.Token_C_COMMENT || token.Token == pg_query.Token_SQL_COMMENT {
+		if token.Token == pg_query.Token_C_COMMENT {
 			commentText := input[token.Start:token.End]
+			if !strings.HasPrefix(commentText, "/**") {
+				continue
+			}
 
 			virtualComment := &pg_query.CommentStmt{
 				Objtype: pg_query.ObjectType_OBJECT_TYPE_UNDEFINED,

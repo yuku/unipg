@@ -31,7 +31,10 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 			continue
 		}
 
-		// 2. Try to attach pending comments (top-level) to the current statement
+		// 2. Extract internal comments (columns) within this statement
+		internalComments := t.extractInternalComments(rawStmt, tree.Stmts)
+
+		// 3. Try to attach pending comments (top-level) to the current statement
 		if len(pendingComments) > 0 {
 			if target := t.getTopLevelTarget(rawStmt); target != nil {
 				processedStmts = append(processedStmts, rawStmt)
@@ -49,8 +52,8 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 					},
 				})
 
-				// Process internal comments (columns) within this statement
-				processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
+				// Add internal comments
+				processedStmts = append(processedStmts, internalComments...)
 
 				pendingComments = nil
 				continue
@@ -61,7 +64,7 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 
 		// Add regular statement and its internal comments
 		processedStmts = append(processedStmts, rawStmt)
-		processedStmts = append(processedStmts, t.extractInternalComments(rawStmt, tree.Stmts)...)
+		processedStmts = append(processedStmts, internalComments...)
 	}
 
 	tree.Stmts = processedStmts
@@ -86,7 +89,7 @@ func (t *Transformer) extractInternalComments(rawStmt *pg_query.RawStmt, allStmt
 		// Only comments strictly INSIDE the statement range
 		if vNode.StmtLocation > rawStmt.StmtLocation && vNode.StmtLocation < stmtEnd {
 			if commentStmt := vNode.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
-				if colName := t.findPrecedingColumn(createStmt, vNode.StmtLocation); colName != "" {
+				if colName := t.findTargetColumn(createStmt, vNode.StmtLocation); colName != "" {
 					results = append(results, &pg_query.RawStmt{
 						Stmt: &pg_query.Node{
 							Node: &pg_query.Node_CommentStmt{
@@ -143,20 +146,28 @@ func (t *Transformer) getTopLevelTarget(rawStmt *pg_query.RawStmt) *commentTarge
 	return nil
 }
 
-func (t *Transformer) findPrecedingColumn(stmt *pg_query.CreateStmt, location int32) string {
-	var lastCol string
-	var lastLoc int32 = -1
+func (t *Transformer) findTargetColumn(stmt *pg_query.CreateStmt, location int32) string {
+	// 1. Check if the comment is BEFORE any column (leads to association with the table, usually handled by top-level)
+	// 2. Check if the comment is AFTER a column but BEFORE the next one (association with the preceding column)
+	// 3. Check if the comment is BEFORE a column but AFTER the previous one (association with the subsequent column)
+
+	// Implementation: find the column whose location is closest to this comment.
+	var bestCol string
+	var minDiff int32 = -1
+
 	for _, elt := range stmt.TableElts {
 		if col := elt.GetColumnDef(); col != nil {
-			// In some cases location might be 0 for some nodes if not explicitly set
-			// by pg_query but Colname is always there.
-			if col.Location < location && col.Location > lastLoc {
-				lastCol = col.Colname
-				lastLoc = col.Location
+			diff := location - col.Location
+			if diff < 0 {
+				diff = -diff
+			}
+			if minDiff == -1 || diff < minDiff {
+				minDiff = diff
+				bestCol = col.Colname
 			}
 		}
 	}
-	return lastCol
+	return bestCol
 }
 
 func (t *Transformer) columnToNode(rv *pg_query.RangeVar, colName string) *pg_query.Node {
@@ -220,24 +231,38 @@ func (t *Transformer) makeStringNode(s string) *pg_query.Node {
 
 func (t *Transformer) cleanComment(s string) string {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "/*") && strings.HasSuffix(s, "*/") {
-		s = s[2 : len(s)-2]
-	} else if strings.HasPrefix(s, "--") {
-		s = s[2:]
+	// Only handle /** ... */ style comments
+	if strings.HasPrefix(s, "/**") && strings.HasSuffix(s, "*/") {
+		s = s[3 : len(s)-2]
+	} else {
+		return ""
 	}
-	return dedent(s)
+
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		// Remove leading asterisk (common in JavaDoc/JSDoc)
+		if strings.HasPrefix(line, "*") {
+			line = strings.TrimPrefix(line, "*")
+			line = strings.TrimSpace(line)
+		}
+		lines[i] = line
+	}
+
+	return dedent(strings.Join(lines, "\n"))
 }
 
 func dedent(s string) string {
 	lines := strings.Split(s, "\n")
-	if len(lines) <= 1 {
-		return strings.TrimSpace(s)
+	if len(lines) == 0 {
+		return ""
 	}
 
-	// Remove leading/trailing empty lines
+	// Find first non-empty line
 	start := 0
 	for ; start < len(lines) && strings.TrimSpace(lines[start]) == ""; start++ {
 	}
+	// Find last non-empty line
 	end := len(lines)
 	for ; end > start && strings.TrimSpace(lines[end-1]) == ""; end-- {
 	}
