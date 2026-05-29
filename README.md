@@ -58,36 +58,36 @@ You can also use `unipg` as a Go library to build custom DDL processing pipeline
 package main
 
 import (
-	"fmt"
-	"log"
+    "fmt"
+    "log"
 
-	"github.com/yuku/unipg"
-	"github.com/yuku/unipg/compilers/stringify"
-	"github.com/yuku/unipg/parsers/text"
-	"github.com/yuku/unipg/transformers/comment"
-	"github.com/yuku/unipg/transformers/extractfk"
-	"github.com/yuku/unipg/transformers/reorder"
+    "github.com/yuku/unipg"
+    "github.com/yuku/unipg/compilers/stringify"
+    "github.com/yuku/unipg/parsers/text"
+    "github.com/yuku/unipg/transformers/comment"
+    "github.com/yuku/unipg/transformers/extractfk"
+    "github.com/yuku/unipg/transformers/reorder"
 )
 
 func main() {
-	input := `
+    input := `
         /** 
          * This is a comment that should be converted 
          * to a DDL comment on the users table 
          */
-		CREATE TABLE users (
+        CREATE TABLE users (
             /** This is a comment that should be converted to a DDL comment on the id column */
-			id INT PRIMARY KEY,
-			team_id INT REFERENCES teams(id)
-		);
-		CREATE TABLE teams (
-			id INT PRIMARY KEY
-		);
-	`
+            id INT PRIMARY KEY,
+            team_id INT REFERENCES teams(id)
+        );
+        CREATE TABLE teams (
+            id INT PRIMARY KEY
+        );
+    `
 
-	// Create a new pipeline
+    // Create a new pipeline
     // The types of `input` and `output` are inferred by the Parser and Compiler.
-	processor := unipg.New(
+    processor := unipg.New(
         text.New(),          // Parser[string]
         []unipg.Transformer{
             comment.New(),   // Convert comments to DDL comments
@@ -97,13 +97,25 @@ func main() {
         stringify.New(),   // Compiler[string]
     )
 
-	// Process the SQL
-	output, err := processor.Process(input)
-	if err != nil {
-		log.Fatalf("Failed to process SQL: %v", err)
-	}
+    // Process the SQL
+    output, err := processor.Process(input)
+    if err != nil {
+        log.Fatalf("Failed to process SQL: %v", err)
+    }
 
     // Print the transformed SQL
+    // ```sql
+    // CREATE TABLE teams (
+    //   id INT PRIMARY KEY
+    // );
+    // CREATE TABLE users (
+    //   id INT PRIMARY KEY,
+    //   team_id INT
+    // );
+    // COMMENT ON TABLE users IS 'This is a comment that should be converted to a DDL comment on the users table';
+    // COMMENT ON COLUMN users.id IS 'This is a comment that should be converted to a DDL comment on the id column';
+    // ALTER TABLE users ADD FOREIGN KEY (team_id) REFERENCES teams(id);
+    // ```
     fmt.Println(output)
 }
 ```
