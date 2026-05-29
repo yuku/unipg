@@ -57,6 +57,9 @@ func (t *Transformer) sortViews(viewStmts []*pg_query.RawStmt) ([]*pg_query.RawS
 	for _, stmt := range viewStmts {
 		name := t.getViewName(stmt)
 		if name != "" {
+			if _, exists := viewMap[name]; exists {
+				return nil, fmt.Errorf("duplicate view statement for %s", name)
+			}
 			viewMap[name] = stmt
 		} else {
 			unnamedViews = append(unnamedViews, stmt)
