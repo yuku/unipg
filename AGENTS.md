@@ -20,6 +20,7 @@
    - Write tests for every AST transformation plugin to ensure they handle edge cases cleanly.
 3. **Error Handling:** - Use `fmt.Errorf` to wrap errors with context (e.g., `fmt.Errorf("parsing sql: %w", err)`).
    - Ensure errors are propagated up the pipeline cleanly.
+   - Use `errors.New` for errors that do not require wrapping.
 4. **Style:** Follow standard `gofmt` styling and Go idiomatic practices (e.g., package-level constructors like `text.New()` or `stringify.New()`).
 
 ## Developer Workflow
