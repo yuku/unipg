@@ -37,9 +37,9 @@ jobs:
     - name: Install gotestsum
       run: go install gotest.tools/gotestsum@v1.13.0
     - name: Test
-      run: gotestsum --junitfile test-results.xml -f github-actions
+      run: gotestsum --junitfile test-results.xml
     - name: Publish Test Summary
       uses: test-summary/action@v2
       with:
-        paths: 'test-results.xml'
+        paths: test-results.xml
       if: always()
