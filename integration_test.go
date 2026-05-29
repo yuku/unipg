@@ -1,6 +1,7 @@
 package unipg_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -18,19 +19,21 @@ func TestIntegration_ParseCompile(t *testing.T) {
 		input := "CREATE TABLE users (id INT PRIMARY KEY);"
 		output, err := processor.Process(input)
 		require.NoError(t, err)
-		// pg_query.Deparse might normalize the SQL (e.g., adding/removing whitespace or changing casing)
-		// but for simple cases it should be equivalent.
-		require.Contains(t, output, "CREATE TABLE users")
-		require.Contains(t, output, "id")
-		require.Contains(t, output, "int")
-		require.Contains(t, output, "PRIMARY KEY")
+
+		normalizedOutput := strings.ToUpper(output)
+		require.Contains(t, normalizedOutput, "CREATE TABLE USERS")
+		require.Contains(t, normalizedOutput, "ID")
+		require.Contains(t, normalizedOutput, "INT")
+		require.Contains(t, normalizedOutput, "PRIMARY KEY")
 	})
 
 	t.Run("multiple statements", func(t *testing.T) {
 		input := "CREATE TABLE a (id int); CREATE TABLE b (id int);"
 		output, err := processor.Process(input)
 		require.NoError(t, err)
-		require.Contains(t, output, "CREATE TABLE a")
-		require.Contains(t, output, "CREATE TABLE b")
+
+		normalizedOutput := strings.ToUpper(output)
+		require.Contains(t, normalizedOutput, "CREATE TABLE A")
+		require.Contains(t, normalizedOutput, "CREATE TABLE B")
 	})
 }

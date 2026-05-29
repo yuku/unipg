@@ -3,21 +3,22 @@ package unipg
 import (
 	"errors"
 	"fmt"
+	"reflect"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
-// Parser takes an input of type I and returns a Postgres AST.
+// Parser takes an input of type I and returns a PostgreSQL AST.
 type Parser[I any] interface {
 	Parse(input I) (*pg_query.ParseResult, error)
 }
 
-// Transformer mutates a Postgres AST in place.
+// Transformer mutates a PostgreSQL AST in place.
 type Transformer interface {
 	Transform(tree *pg_query.ParseResult) error
 }
 
-// Compiler takes a Postgres AST and converts it to output of type O.
+// Compiler takes a PostgreSQL AST and converts it to output of type O.
 type Compiler[O any] interface {
 	Compile(tree *pg_query.ParseResult) (O, error)
 }
@@ -46,10 +47,10 @@ func New[I any, O any](
 func (p *Processor[I, O]) Process(input I) (O, error) {
 	var zero O
 
-	if p.parser == nil {
+	if isNil(p.parser) {
 		return zero, errors.New("parser is nil")
 	}
-	if p.compiler == nil {
+	if isNil(p.compiler) {
 		return zero, errors.New("compiler is nil")
 	}
 
@@ -64,7 +65,7 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 
 	// 2. Transform
 	for i, t := range p.transformers {
-		if t == nil {
+		if isNil(t) {
 			return zero, fmt.Errorf("transformer at index %d is nil", i)
 		}
 		if err := t.Transform(ast); err != nil {
@@ -78,4 +79,18 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 		return zero, fmt.Errorf("compiling AST: %w", err)
 	}
 	return out, nil
+}
+
+// isNil checks if an interface value is nil or contains a nil pointer.
+func isNil(i any) bool {
+	if i == nil {
+		return true
+	}
+	v := reflect.ValueOf(i)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }

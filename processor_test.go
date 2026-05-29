@@ -75,8 +75,24 @@ func TestProcessor_Process(t *testing.T) {
 		require.Contains(t, err.Error(), "parser is nil")
 	})
 
+	t.Run("typed-nil parser error", func(t *testing.T) {
+		var p *mockParser = nil
+		processor := New[string, string](p, nil, &mockCompiler{})
+		_, err := processor.Process("input")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parser is nil")
+	})
+
 	t.Run("nil compiler error", func(t *testing.T) {
 		processor := New[string, string](&mockParser{result: &pg_query.ParseResult{}}, nil, nil)
+		_, err := processor.Process("input")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "compiler is nil")
+	})
+
+	t.Run("typed-nil compiler error", func(t *testing.T) {
+		var c *mockCompiler = nil
+		processor := New[string, string](&mockParser{result: &pg_query.ParseResult{}}, nil, c)
 		_, err := processor.Process("input")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "compiler is nil")
@@ -94,6 +110,16 @@ func TestProcessor_Process(t *testing.T) {
 	t.Run("nil transformer in slice", func(t *testing.T) {
 		parser := &mockParser{result: &pg_query.ParseResult{}}
 		processor := New(parser, []Transformer{nil}, &mockCompiler{})
+
+		_, err := processor.Process("input")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "transformer at index 0 is nil")
+	})
+
+	t.Run("typed-nil transformer in slice", func(t *testing.T) {
+		var t1 *mockTransformer = nil
+		parser := &mockParser{result: &pg_query.ParseResult{}}
+		processor := New(parser, []Transformer{t1}, &mockCompiler{})
 
 		_, err := processor.Process("input")
 		require.Error(t, err)

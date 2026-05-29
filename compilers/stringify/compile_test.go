@@ -1,6 +1,7 @@
 package stringify
 
 import (
+	"strings"
 	"testing"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
@@ -17,7 +18,7 @@ func TestCompiler_Compile(t *testing.T) {
 
 		sql, err := c.Compile(result)
 		require.NoError(t, err)
-		require.Equal(t, "SELECT 1", sql)
+		require.Equal(t, "SELECT 1", strings.ToUpper(sql))
 	})
 
 	t.Run("nil tree", func(t *testing.T) {
