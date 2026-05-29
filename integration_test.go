@@ -110,13 +110,7 @@ func TestIntegration(t *testing.T) {
 			got, err := processor.Process(tc.input)
 			require.NoError(t, err)
 
-			gotNormalized := normalizeSQL(t, got)
-			require.NoError(t, err, "failed to normalize actual output")
-
-			wantNormalized := normalizeSQL(t, tc.want)
-			require.NoError(t, err, "failed to normalize expected output")
-
-			require.Equal(t, wantNormalized, gotNormalized)
+			require.Equal(t, normalizeSQL(t, tc.want), normalizeSQL(t, got))
 		})
 	}
 }
