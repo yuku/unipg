@@ -26,8 +26,8 @@ func TestCompiler_Compile(t *testing.T) {
 			options: []Option{WithPretty()},
 			want: dedent(`
 				CREATE TABLE users (
-				  id serial PRIMARY KEY,
-				  name text NOT NULL
+				  id SERIAL PRIMARY KEY,
+				  NAME TEXT NOT NULL
 				)`),
 		},
 		{
@@ -45,8 +45,11 @@ func TestCompiler_Compile(t *testing.T) {
 				CREATE TABLE customers (
 				  id INT PRIMARY KEY,
 				  display_name VARCHAR(50) NOT NULL,
-				  subscription_period INT NOT NULL DEFAULT 6 CHECK (subscription_period > 0),
-				  privacy_policy_id INT NOT NULL REFERENCES privacy_policies(id) ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
+				  subscription_period INT NOT NULL DEFAULT 6 CHECK (
+				    subscription_period > 0
+				  ),
+				  privacy_policy_id INT NOT NULL REFERENCES privacy_policies(id)
+				  ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
 				  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 				)`),
 		},
@@ -55,7 +58,9 @@ func TestCompiler_Compile(t *testing.T) {
 			sql:     "CREATE UNIQUE INDEX customers_metadata_region_uniq ON customers (jsonb_extract_path_text(metadata, 'region', 'id'))",
 			options: []Option{WithPretty()},
 			want: dedent(`
-				CREATE UNIQUE INDEX customers_metadata_region_uniq ON customers USING BTREE (
+				CREATE UNIQUE INDEX customers_metadata_region_uniq
+				ON customers
+				USING BTREE (
 				  jsonb_extract_path_text(metadata, 'region', 'id')
 				)`),
 		},
@@ -97,10 +102,14 @@ func TestCompiler_Compile(t *testing.T) {
 			options: []Option{WithPretty()},
 			want: dedent(`
 				CREATE TABLE employee_profiles (
-				  employee_id INT REFERENCES employees(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+				  employee_id INT REFERENCES employees(id)
+				  ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
 				  profile_key VARCHAR(50),
 				  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-				  PRIMARY KEY (employee_id, profile_key)
+				  PRIMARY KEY (
+				    employee_id,
+				    profile_key
+				  )
 				)`),
 		},
 		{
@@ -120,13 +129,21 @@ func TestCompiler_Compile(t *testing.T) {
 			want: dedent(`
 				CREATE TABLE office_locations (
 				  id INT NOT NULL PRIMARY KEY,
-				  owner_id INT NOT NULL REFERENCES owners(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+				  owner_id INT NOT NULL REFERENCES owners(id)
+				  ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
 				  address_line1 VARCHAR(50) NOT NULL,
-				  region_code VARCHAR(9) NOT NULL REFERENCES regions(code) ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
+				  region_code VARCHAR(9) NOT NULL REFERENCES regions(code)
+				  ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
 				  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-				  CONSTRAINT office_locations_owner_id_name_unique UNIQUE (owner_id, address_line1),
-				  CONSTRAINT office_locations_id_owner_id_unique UNIQUE (id, owner_id)
+				  CONSTRAINT office_locations_owner_id_name_unique UNIQUE (
+				    owner_id,
+				    address_line1
+				  ),
+				  CONSTRAINT office_locations_id_owner_id_unique UNIQUE (
+				    id,
+				    owner_id
+				  )
 				)`),
 		},
 		{
@@ -174,10 +191,12 @@ func TestCompiler_Compile(t *testing.T) {
 				  FROM user_activities
 				  WHERE user_activity_type = 'suspend'
 				  GROUP BY user_id
-				) last_user_activities USING (
+				) last_user_activities
+				USING (
 				  user_id
 				)
-				LEFT JOIN user_activities ua USING (
+				LEFT JOIN user_activities ua
+				USING (
 				  user_id,
 				  acted_at
 				)

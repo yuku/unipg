@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
@@ -18,37 +19,24 @@ func makeMap[T comparable](list ...T) map[T]struct{} {
 	return m
 }
 
-var keywords = makeMap(
-	"CREATE", "TABLE", "PRIMARY", "KEY",
-	"NOT", "NULL", "UNIQUE", "CHECK",
-	"DEFAULT", "REFERENCES", "ON", "DELETE",
-	"RESTRICT", "CASCADE", "DEFERRABLE", "INITIALLY",
-	"IMMEDIATE", "DEFERRED", "INDEX", "USING",
-	"VIEW", "AS", "SELECT", "FROM",
-	"WHERE", "AND", "OR", "IN",
-	"IS", "TIMESTAMP", "TIMESTAMPTZ", "VARCHAR",
-	"CHAR", "INT", "DATE", "BOOLEAN",
-	"FALSE", "TRUE", "ALTER", "ADD",
-	"CONSTRAINT", "EXTENSION", "IF", "EXISTS",
-	"BTREE", "CURRENT_TIMESTAMP", "INSERT", "UPDATE",
-	"DROP", "GROUP", "ORDER", "HAVING",
-	"LIMIT", "OFFSET", "UNION", "VALUES",
-	"RETURNING", "DISTINCT", "LEFT", "RIGHT",
-	"FULL", "INNER", "JOIN", "BY",
-	"MAX", "MIN", "COUNT", "SUM", "AVG",
-)
-
 var majorKeywords = makeMap(
 	"CREATE", "ALTER", "DROP", "SELECT",
 	"FROM", "WHERE", "GROUP", "ORDER",
 	"HAVING", "LIMIT", "OFFSET", "UNION",
 	"VALUES", "INSERT", "UPDATE", "RETURNING",
 	"JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS",
+	"COMMENT", "ON", "USING",
 )
 
 var spaceBeforeParen = makeMap(
 	"CHECK", "UNIQUE", "REFERENCES", "IN",
-	"VALUES", "TABLE", "KEY", "USING",
+	"VALUES", "TABLE", "KEY", "USING", "ON", "SELECT", "FROM",
+)
+
+var commonTypesAndFuncs = makeMap(
+	"TEXT", "BIGINT", "SMALLINT", "NUMERIC", "JSONB", "UUID", "SERIAL", "BIGSERIAL", "BYTEA",
+	"MAX", "MIN", "COUNT", "SUM", "AVG", "NOW", "BTREE", "TIMESTAMPTZ", "TIMESTAMP",
+	"VARCHAR", "CHAR", "INT", "DATE", "BOOLEAN",
 )
 
 var joinModifiers = makeMap(
@@ -90,42 +78,48 @@ func (c *Compiler) Compile(tree *pg_query.ParseResult) (string, error) {
 	}
 
 	if c.pretty {
-		return c.format(sql), nil
+		formatted, err := c.format(sql)
+		if err != nil {
+			return "", fmt.Errorf("formatting SQL: %w", err)
+		}
+		return formatted, nil
 	}
 
 	return sql, nil
 }
 
-func (c *Compiler) format(sql string) string {
+func (c *Compiler) format(sql string) (string, error) {
 	result, err := pg_query.Scan(sql)
 	if err != nil {
-		return sql
+		return "", err
 	}
 	var buf strings.Builder
 	indent := 0
 	var prevToken string
 	var lastChar rune
 	var rootKeyword string
-	var multilineDepth int
+	var multilineStack []int
 
 	for i, token := range result.Tokens {
 		t := sql[token.Start:token.End]
 		upperT := strings.ToUpper(t)
 
-		if _, ok := keywords[upperT]; ok {
+		// Normalize keywords
+		if token.KeywordKind != pg_query.KeywordKind_NO_KEYWORD {
+			t = upperT
+		} else if _, ok := commonTypesAndFuncs[upperT]; ok {
 			t = upperT
 		}
 
 		if rootKeyword == "" {
-			if _, ok := keywords[upperT]; ok {
+			if token.KeywordKind != pg_query.KeywordKind_NO_KEYWORD {
 				rootKeyword = upperT
 			}
 		}
 
 		if t == "(" {
 			if lastChar != 0 && lastChar != '\n' && lastChar != ' ' {
-				_, isSpaceBeforeParen := spaceBeforeParen[prevToken]
-				if indent == 0 || isSpaceBeforeParen {
+				if _, ok := spaceBeforeParen[prevToken]; indent == 0 || ok {
 					buf.WriteByte(' ')
 					lastChar = ' '
 				}
@@ -135,17 +129,20 @@ func (c *Compiler) format(sql string) string {
 			indent++
 
 			shouldMultiline := false
-			if indent == 1 {
-				if rootKeyword == "CREATE" || rootKeyword == "ALTER" || rootKeyword == "INSERT" {
+			// Heuristic: top-level parens in CREATE/ALTER/INSERT, or following specific keywords
+			if rootKeyword == "CREATE" || rootKeyword == "ALTER" || rootKeyword == "INSERT" || rootKeyword == "VIEW" {
+				if indent == 1 {
+					shouldMultiline = true
+				} else if _, ok := spaceBeforeParen[prevToken]; ok {
 					shouldMultiline = true
 				}
-				if _, ok := spaceBeforeParen[prevToken]; ok {
-					shouldMultiline = true
-				}
+			} else if _, ok := spaceBeforeParen[prevToken]; ok {
+				// E.g. IN ( ... )
+				shouldMultiline = true
 			}
 
 			if shouldMultiline {
-				multilineDepth = indent
+				multilineStack = append(multilineStack, indent)
 				buf.WriteByte('\n')
 				buf.WriteString(strings.Repeat(indentWidth, indent))
 				lastChar = '\n'
@@ -155,11 +152,11 @@ func (c *Compiler) format(sql string) string {
 		}
 
 		if t == ")" {
-			if indent == multilineDepth {
+			if len(multilineStack) > 0 && multilineStack[len(multilineStack)-1] == indent {
+				multilineStack = multilineStack[:len(multilineStack)-1]
 				buf.WriteByte('\n')
 				buf.WriteString(strings.Repeat(indentWidth, indent-1))
 				lastChar = '\n'
-				multilineDepth = 0
 			}
 			indent--
 			buf.WriteString(t)
@@ -168,7 +165,7 @@ func (c *Compiler) format(sql string) string {
 			continue
 		}
 
-		if t == "," && indent == multilineDepth && multilineDepth > 0 {
+		if t == "," && len(multilineStack) > 0 && multilineStack[len(multilineStack)-1] == indent {
 			buf.WriteString(t)
 			buf.WriteByte('\n')
 			buf.WriteString(strings.Repeat(indentWidth, indent))
@@ -186,7 +183,7 @@ func (c *Compiler) format(sql string) string {
 			}
 			lastChar = '\n'
 			rootKeyword = ""
-			multilineDepth = 0
+			multilineStack = nil
 			prevToken = ";"
 			continue
 		}
@@ -201,6 +198,7 @@ func (c *Compiler) format(sql string) string {
 			}
 		}
 
+		// Add leading space if needed
 		if lastChar != 0 && lastChar != '\n' && lastChar != ' ' && lastChar != '(' &&
 			t != "," && t != ";" && t != "." && lastChar != '.' {
 			buf.WriteByte(' ')
@@ -208,9 +206,9 @@ func (c *Compiler) format(sql string) string {
 		}
 		buf.WriteString(t)
 		if len(t) > 0 {
-			lastChar = rune(t[len(t)-1])
+			lastChar, _ = utf8.DecodeLastRuneInString(t)
 		}
 		prevToken = upperT
 	}
-	return buf.String()
+	return buf.String(), nil
 }
