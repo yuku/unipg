@@ -105,9 +105,11 @@ func (c *Compiler) format(sql string) (string, error) {
 		upperT := strings.ToUpper(t)
 
 		// Normalize keywords
-		if token.KeywordKind != pg_query.KeywordKind_NO_KEYWORD {
-			t = upperT
-		} else if _, ok := commonTypesAndFuncs[upperT]; ok {
+		// Only uppercase reserved keywords or explicitly listed types/funcs to avoid uppercasing identifiers
+		_, isCommon := commonTypesAndFuncs[upperT]
+		if token.KeywordKind == pg_query.KeywordKind_RESERVED_KEYWORD ||
+			token.KeywordKind == pg_query.KeywordKind_TYPE_FUNC_NAME_KEYWORD ||
+			isCommon {
 			t = upperT
 		}
 
@@ -115,6 +117,8 @@ func (c *Compiler) format(sql string) (string, error) {
 			if token.KeywordKind != pg_query.KeywordKind_NO_KEYWORD {
 				rootKeyword = upperT
 			}
+		} else if rootKeyword == "CREATE" && upperT == "VIEW" {
+			rootKeyword = "VIEW"
 		}
 
 		if t == "(" {
@@ -129,7 +133,7 @@ func (c *Compiler) format(sql string) (string, error) {
 			indent++
 
 			shouldMultiline := false
-			// Heuristic: top-level parens in CREATE/ALTER/INSERT, or following specific keywords
+			// Heuristic: top-level parens in CREATE/ALTER/INSERT/VIEW, or following specific keywords
 			if rootKeyword == "CREATE" || rootKeyword == "ALTER" || rootKeyword == "INSERT" || rootKeyword == "VIEW" {
 				if indent == 1 {
 					shouldMultiline = true

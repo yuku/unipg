@@ -27,7 +27,7 @@ func TestCompiler_Compile(t *testing.T) {
 			want: dedent(`
 				CREATE TABLE users (
 				  id SERIAL PRIMARY KEY,
-				  NAME TEXT NOT NULL
+				  name TEXT NOT NULL
 				)`),
 		},
 		{
