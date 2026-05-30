@@ -96,7 +96,7 @@ func main() {
             extractfk.New(), // Extract inline FKs to standalone ALTER TABLEs
             reorder.New(),   // Reorder ALTER TABLEs to the bottom
         },
-        stringify.New(),   // Compiler[string]
+        stringify.New(stringify.WithPretty()),   // Compiler[string]
     )
 
     // Process the SQL
