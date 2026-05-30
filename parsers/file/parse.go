@@ -39,7 +39,7 @@ func (p *Parser) Parse(paths []string) (*pg_query.ParseResult, error) {
 
 		// If path doesn't contain glob characters and no match found,
 		// it's likely a missing file that the user expected to exist.
-		if len(matches) == 0 && !strings.ContainsAny(path, "*?[]") {
+		if len(matches) == 0 && !strings.ContainsAny(path, "*?[") {
 			if _, err := os.Stat(path); err != nil {
 				return nil, fmt.Errorf("file not found: %w", err)
 			}

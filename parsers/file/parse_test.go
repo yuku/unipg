@@ -66,6 +66,13 @@ func TestParser_Parse(t *testing.T) {
 		require.Contains(t, err.Error(), "file not found")
 	})
 
+	t.Run("missing file with closing bracket", func(t *testing.T) {
+		// ']' alone is not a glob character, so it should trigger "file not found"
+		_, err := p.Parse([]string{filepath.Join(tmpDir, "missing].sql")})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "file not found")
+	})
+
 	t.Run("empty list", func(t *testing.T) {
 		result, err := p.Parse([]string{})
 		require.NoError(t, err)
