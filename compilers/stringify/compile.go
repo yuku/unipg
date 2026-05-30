@@ -28,15 +28,28 @@ var majorKeywords = makeMap(
 	"COMMENT", "ON", "USING",
 )
 
+var extraKeywordsToNormalize = makeMap(
+	"ADD", "COLUMN", "CONSTRAINT", "RENAME", "TO", "MATERIALIZED", "FOREIGN",
+	"DEFERRABLE", "INITIALLY", "IMMEDIATE", "DEFERRED", "CASCADE", "RESTRICT",
+	"NO", "ACTION", "IF", "EXISTS",
+)
+
+var multilineStatementKeywords = makeMap(
+	"CREATE", "ALTER", "INSERT", "VIEW",
+)
+
 var spaceBeforeParen = makeMap(
 	"CHECK", "UNIQUE", "REFERENCES", "IN",
 	"VALUES", "TABLE", "KEY", "USING", "ON", "SELECT", "FROM",
 )
 
 var commonTypesAndFuncs = makeMap(
-	"TEXT", "BIGINT", "SMALLINT", "NUMERIC", "JSONB", "UUID", "SERIAL", "BIGSERIAL", "BYTEA",
-	"MAX", "MIN", "COUNT", "SUM", "AVG", "NOW", "BTREE", "TIMESTAMPTZ", "TIMESTAMP",
-	"VARCHAR", "CHAR", "INT", "DATE", "BOOLEAN",
+	"TEXT", "BIGINT", "SMALLINT", "NUMERIC", "JSONB", "JSON", "UUID", "SERIAL",
+	"BIGSERIAL", "BYTEA", "REAL", "DOUBLE", "PRECISION", "INTERVAL", "DATE",
+	"TIME", "TIMESTAMP", "TIMESTAMPTZ", "BOOLEAN", "INET", "CIDR", "MACADDR",
+	"BIT", "VARBIT", "XML", "INT", "INTEGER", "CHAR", "VARCHAR", "CHARACTER",
+	"VARYING", "MAX", "MIN", "COUNT", "SUM", "AVG", "NOW", "BTREE", "GIN", "GIST",
+	"BRIN",
 )
 
 var joinModifiers = makeMap(
@@ -105,12 +118,16 @@ func (c *Compiler) format(sql string) (string, error) {
 		upperT := strings.ToUpper(t)
 
 		// Normalize keywords
-		// Only uppercase reserved keywords or explicitly listed types/funcs to avoid uppercasing identifiers
-		_, isCommon := commonTypesAndFuncs[upperT]
 		if token.KeywordKind == pg_query.KeywordKind_RESERVED_KEYWORD ||
-			token.KeywordKind == pg_query.KeywordKind_TYPE_FUNC_NAME_KEYWORD ||
-			isCommon {
+			token.KeywordKind == pg_query.KeywordKind_TYPE_FUNC_NAME_KEYWORD {
 			t = upperT
+		} else {
+			_, isMajor := majorKeywords[upperT]
+			_, isCommon := commonTypesAndFuncs[upperT]
+			_, isExtra := extraKeywordsToNormalize[upperT]
+			if isMajor || isCommon || isExtra {
+				t = upperT
+			}
 		}
 
 		if rootKeyword == "" {
@@ -133,8 +150,9 @@ func (c *Compiler) format(sql string) (string, error) {
 			indent++
 
 			shouldMultiline := false
-			// Heuristic: top-level parens in CREATE/ALTER/INSERT/VIEW, or following specific keywords
-			if rootKeyword == "CREATE" || rootKeyword == "ALTER" || rootKeyword == "INSERT" || rootKeyword == "VIEW" {
+			// Heuristic: top-level parens in specific statements, or following specific keywords
+			_, isMultilineStatement := multilineStatementKeywords[rootKeyword]
+			if isMultilineStatement {
 				if indent == 1 {
 					shouldMultiline = true
 				} else if _, ok := spaceBeforeParen[prevToken]; ok {
