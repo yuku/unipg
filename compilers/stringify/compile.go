@@ -10,42 +10,50 @@ import (
 
 const indentWidth = "  "
 
-var keywords = map[string]bool{
-	"CREATE": true, "TABLE": true, "PRIMARY": true, "KEY": true,
-	"NOT": true, "NULL": true, "UNIQUE": true, "CHECK": true,
-	"DEFAULT": true, "REFERENCES": true, "ON": true, "DELETE": true,
-	"RESTRICT": true, "CASCADE": true, "DEFERRABLE": true, "INITIALLY": true,
-	"IMMEDIATE": true, "DEFERRED": true, "INDEX": true, "USING": true,
-	"VIEW": true, "AS": true, "SELECT": true, "FROM": true,
-	"WHERE": true, "AND": true, "OR": true, "IN": true,
-	"IS": true, "TIMESTAMP": true, "TIMESTAMPTZ": true, "VARCHAR": true,
-	"CHAR": true, "INT": true, "DATE": true, "BOOLEAN": true,
-	"FALSE": true, "TRUE": true, "ALTER": true, "ADD": true,
-	"CONSTRAINT": true, "EXTENSION": true, "IF": true, "EXISTS": true,
-	"BTREE": true, "CURRENT_TIMESTAMP": true, "INSERT": true, "UPDATE": true,
-	"DROP": true, "GROUP": true, "ORDER": true, "HAVING": true,
-	"LIMIT": true, "OFFSET": true, "UNION": true, "VALUES": true,
-	"RETURNING": true, "DISTINCT": true, "LEFT": true, "RIGHT": true,
-	"FULL": true, "INNER": true, "JOIN": true, "BY": true,
-	"MAX": true, "MIN": true, "COUNT": true, "SUM": true, "AVG": true,
+func makeMap[T comparable](list ...T) map[T]struct{} {
+	m := make(map[T]struct{}, len(list))
+	for _, item := range list {
+		m[item] = struct{}{}
+	}
+	return m
 }
 
-var majorKeywords = map[string]bool{
-	"CREATE": true, "ALTER": true, "DROP": true, "SELECT": true,
-	"FROM": true, "WHERE": true, "GROUP": true, "ORDER": true,
-	"HAVING": true, "LIMIT": true, "OFFSET": true, "UNION": true,
-	"VALUES": true, "INSERT": true, "UPDATE": true, "RETURNING": true,
-	"JOIN": true, "LEFT": true, "RIGHT": true, "FULL": true, "INNER": true, "CROSS": true,
-}
+var keywords = makeMap(
+	"CREATE", "TABLE", "PRIMARY", "KEY",
+	"NOT", "NULL", "UNIQUE", "CHECK",
+	"DEFAULT", "REFERENCES", "ON", "DELETE",
+	"RESTRICT", "CASCADE", "DEFERRABLE", "INITIALLY",
+	"IMMEDIATE", "DEFERRED", "INDEX", "USING",
+	"VIEW", "AS", "SELECT", "FROM",
+	"WHERE", "AND", "OR", "IN",
+	"IS", "TIMESTAMP", "TIMESTAMPTZ", "VARCHAR",
+	"CHAR", "INT", "DATE", "BOOLEAN",
+	"FALSE", "TRUE", "ALTER", "ADD",
+	"CONSTRAINT", "EXTENSION", "IF", "EXISTS",
+	"BTREE", "CURRENT_TIMESTAMP", "INSERT", "UPDATE",
+	"DROP", "GROUP", "ORDER", "HAVING",
+	"LIMIT", "OFFSET", "UNION", "VALUES",
+	"RETURNING", "DISTINCT", "LEFT", "RIGHT",
+	"FULL", "INNER", "JOIN", "BY",
+	"MAX", "MIN", "COUNT", "SUM", "AVG",
+)
 
-var spaceBeforeParen = map[string]bool{
-	"CHECK": true, "UNIQUE": true, "REFERENCES": true, "IN": true,
-	"VALUES": true, "TABLE": true, "KEY": true, "USING": true,
-}
+var majorKeywords = makeMap(
+	"CREATE", "ALTER", "DROP", "SELECT",
+	"FROM", "WHERE", "GROUP", "ORDER",
+	"HAVING", "LIMIT", "OFFSET", "UNION",
+	"VALUES", "INSERT", "UPDATE", "RETURNING",
+	"JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS",
+)
 
-var joinModifiers = map[string]bool{
-	"LEFT": true, "RIGHT": true, "FULL": true, "INNER": true, "CROSS": true, "OUTER": true,
-}
+var spaceBeforeParen = makeMap(
+	"CHECK", "UNIQUE", "REFERENCES", "IN",
+	"VALUES", "TABLE", "KEY", "USING",
+)
+
+var joinModifiers = makeMap(
+	"LEFT", "RIGHT", "FULL", "INNER", "CROSS", "OUTER",
+)
 
 // Compiler compiles a PostgreSQL AST back into a SQL string.
 type Compiler struct {
@@ -104,17 +112,20 @@ func (c *Compiler) format(sql string) string {
 		t := sql[token.Start:token.End]
 		upperT := strings.ToUpper(t)
 
-		if keywords[upperT] {
+		if _, ok := keywords[upperT]; ok {
 			t = upperT
 		}
 
-		if rootKeyword == "" && keywords[upperT] {
-			rootKeyword = upperT
+		if rootKeyword == "" {
+			if _, ok := keywords[upperT]; ok {
+				rootKeyword = upperT
+			}
 		}
 
 		if t == "(" {
 			if lastChar != 0 && lastChar != '\n' && lastChar != ' ' {
-				if indent == 0 || spaceBeforeParen[prevToken] {
+				_, isSpaceBeforeParen := spaceBeforeParen[prevToken]
+				if indent == 0 || isSpaceBeforeParen {
 					buf.WriteByte(' ')
 					lastChar = ' '
 				}
@@ -128,7 +139,7 @@ func (c *Compiler) format(sql string) string {
 				if rootKeyword == "CREATE" || rootKeyword == "ALTER" || rootKeyword == "INSERT" {
 					shouldMultiline = true
 				}
-				if spaceBeforeParen[prevToken] {
+				if _, ok := spaceBeforeParen[prevToken]; ok {
 					shouldMultiline = true
 				}
 			}
@@ -180,8 +191,9 @@ func (c *Compiler) format(sql string) string {
 			continue
 		}
 
-		if majorKeywords[upperT] {
-			isJoinAfterModifier := (upperT == "JOIN" || upperT == "OUTER") && joinModifiers[prevToken]
+		if _, ok := majorKeywords[upperT]; ok {
+			_, isPrevJoinModifier := joinModifiers[prevToken]
+			isJoinAfterModifier := (upperT == "JOIN" || upperT == "OUTER") && isPrevJoinModifier
 			if lastChar != 0 && lastChar != '\n' && !isJoinAfterModifier {
 				buf.WriteByte('\n')
 				buf.WriteString(strings.Repeat(indentWidth, indent))
