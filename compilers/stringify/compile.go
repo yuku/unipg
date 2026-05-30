@@ -20,12 +20,10 @@ func makeMap[T comparable](list ...T) map[T]struct{} {
 }
 
 var majorKeywords = makeMap(
-	"CREATE", "ALTER", "DROP", "SELECT",
-	"FROM", "WHERE", "GROUP", "ORDER",
-	"HAVING", "LIMIT", "OFFSET", "UNION",
-	"VALUES", "INSERT", "UPDATE", "RETURNING",
-	"JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS",
-	"COMMENT", "ON", "USING",
+	"CREATE", "ALTER", "DROP", "SELECT", "FROM", "WHERE", "GROUP", "ORDER",
+	"HAVING", "LIMIT", "OFFSET", "UNION", "VALUES", "INSERT", "UPDATE",
+	"RETURNING", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "COMMENT",
+	"ON", "USING",
 )
 
 var extraKeywordsToNormalize = makeMap(
@@ -39,8 +37,8 @@ var multilineStatementKeywords = makeMap(
 )
 
 var spaceBeforeParen = makeMap(
-	"CHECK", "UNIQUE", "REFERENCES", "IN",
-	"VALUES", "TABLE", "KEY", "USING", "ON", "SELECT", "FROM",
+	"CHECK", "UNIQUE", "REFERENCES", "IN", "VALUES", "TABLE", "KEY", "USING",
+	"ON", "SELECT", "FROM",
 )
 
 var commonTypesAndFuncs = makeMap(
