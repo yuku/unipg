@@ -1,16 +1,36 @@
 package extractfk
 
 import (
+	"strings"
+
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
+const pgMaxIdentifierLen = 63
+
 // Transformer extracts inline foreign key constraints from CREATE TABLE statements
 // and converts them into standalone ALTER TABLE statements.
-type Transformer struct{}
+type Transformer struct {
+	revealConstraintName bool
+}
+
+// Option is a functional option for the Transformer.
+type Option func(*Transformer)
+
+// WithRevealConstraintName enables automatic generation of constraint names for anonymous foreign keys.
+func WithRevealConstraintName() Option {
+	return func(t *Transformer) {
+		t.revealConstraintName = true
+	}
+}
 
 // New creates a new ExtractFK Transformer.
-func New() *Transformer {
-	return &Transformer{}
+func New(opts ...Option) *Transformer {
+	t := &Transformer{}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 // Transform implements unipg.Transformer.
@@ -19,12 +39,18 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 
 	for _, rawStmt := range tree.Stmts {
 		createStmtNode := rawStmt.Stmt.GetCreateStmt()
-		if createStmtNode == nil {
+		if createStmtNode == nil || createStmtNode.Relation == nil {
 			continue
 		}
 
+		tableName := createStmtNode.Relation.Relname
 		extractedConstraints := t.extractForeignKeys(createStmtNode)
+
 		for _, constraint := range extractedConstraints {
+			if t.revealConstraintName && constraint.Conname == "" {
+				constraint.Conname = t.generateFKName(tableName, constraint)
+			}
+
 			alterTableStmt := &pg_query.AlterTableStmt{
 				Relation: createStmtNode.Relation,
 				Objtype:  pg_query.ObjectType_OBJECT_TABLE,
@@ -124,6 +150,69 @@ func (t *Transformer) extractFKsFromColumn(columnDef *pg_query.ColumnDef) []*pg_
 
 	columnDef.Constraints = remainingConstraints
 	return extracted
+}
+
+func (t *Transformer) generateFKName(tableName string, constraint *pg_query.Constraint) string {
+	var cols []string
+	for _, attr := range constraint.FkAttrs {
+		if s := attr.GetString_(); s != nil {
+			cols = append(cols, s.Sval)
+		}
+	}
+
+	if len(cols) == 0 {
+		return ""
+	}
+
+	joinedCols := strings.Join(cols, "_")
+	return t.postgresStyleName(tableName, joinedCols, "_fkey")
+}
+
+func (t *Transformer) postgresStyleName(table, cols, suffix string) string {
+	const maxLen = pgMaxIdentifierLen
+
+	if len(table)+1+len(cols)+len(suffix) <= maxLen {
+		return table + "_" + cols + suffix
+	}
+
+	// Balanced truncation like PostgreSQL's ChooseRelationName
+	targetTotal := maxLen - len(suffix) - 1 // -1 for the "_" separator
+	if targetTotal < 2 {
+		// Fallback for extremely short maxLen (not expected)
+		joined := table + "_" + cols
+		return truncateToBytes(joined, maxLen-len(suffix)) + suffix
+	}
+
+	tLen := len(table)
+	cLen := len(cols)
+
+	half := targetTotal / 2
+	if tLen > half && cLen > half {
+		tLen = half
+		cLen = targetTotal - half
+	} else if tLen > half {
+		tLen = targetTotal - cLen
+	} else if cLen > half {
+		cLen = targetTotal - tLen
+	}
+
+	table = truncateToBytes(table, tLen)
+	cols = truncateToBytes(cols, cLen)
+
+	return table + "_" + cols + suffix
+}
+
+// truncateToBytes truncates string s to n bytes, ensuring it doesn't break UTF-8 sequences.
+func truncateToBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := n
+	// If s[i] is a continuation byte (starts with 10), move back until we find a leading byte.
+	for i > 0 && (s[i]&0xC0 == 0x80) {
+		i--
+	}
+	return s[:i]
 }
 
 func makeStringNode(s string) *pg_query.Node {

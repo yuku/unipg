@@ -115,6 +115,20 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
+			name:         "full pipeline: extractfk with RevealConstraintName",
+			transformers: []unipg.Transformer{extractfk.New(extractfk.WithRevealConstraintName())},
+			input: `
+				CREATE TABLE users (
+					id INT PRIMARY KEY,
+					team_id INT REFERENCES teams(id)
+				);
+			`,
+			want: `
+				CREATE TABLE users (id int PRIMARY KEY, team_id int);
+				ALTER TABLE users ADD CONSTRAINT users_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams (id)
+			`,
+		},
+		{
 			name:         "complex reordering: views with dependencies",
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `

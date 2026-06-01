@@ -122,6 +122,68 @@ func TestTransformer_Transform(t *testing.T) {
 		require.True(t, constraint.Initdeferred, "Initdeferred should be true (INITIALLY DEFERRED)")
 	})
 
+	t.Run("extract named column-level foreign key", func(t *testing.T) {
+		input := "CREATE TABLE users (id INT PRIMARY KEY, team_id INT CONSTRAINT fk_users_teams REFERENCES teams(id));"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		require.Len(t, result.Stmts, 2)
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		require.Equal(t, "fk_users_teams", constraint.Conname)
+	})
+
+	t.Run("reveal constraint name", func(t *testing.T) {
+		transformer := New(WithRevealConstraintName())
+		input := "CREATE TABLE users (id INT PRIMARY KEY, team_id INT REFERENCES teams(id));"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		require.Equal(t, "users_team_id_fkey", constraint.Conname)
+	})
+
+	t.Run("reveal constraint name with long identifiers", func(t *testing.T) {
+		transformer := New(WithRevealConstraintName())
+		// 30 chars + 30 chars -> should be balanced
+		input := "CREATE TABLE t123456789012345678901234567890 (c123456789012345678901234567890 INT REFERENCES teams(id));"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		// targetTotal = 63 - 5 - 1 = 57. half = 28.
+		// table: 30 -> 28. cols: 30 -> 29.
+		require.Equal(t, "t123456789012345678901234567_c1234567890123456789012345678_fkey", constraint.Conname)
+		require.LessOrEqual(t, len(constraint.Conname), 63)
+	})
+
+	t.Run("reveal constraint name with multi-byte characters", func(t *testing.T) {
+		transformer := New(WithRevealConstraintName())
+		input := "CREATE TABLE テーブル名がとても長い場合にどうなるかテストするためのテーブル (カラム名もとても長い場合にどうなるかテストするためのカラム INT REFERENCES t1(id));"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		// Matches the behavior observed in real Postgres
+		require.Equal(t, "テーブル名がとても_カラム名もとても長_fkey", constraint.Conname)
+		require.LessOrEqual(t, len(constraint.Conname), 63)
+	})
+
 	t.Run("no foreign keys", func(t *testing.T) {
 		input := "CREATE TABLE users (id INT PRIMARY KEY);"
 		result, err := pg_query.Parse(input)
