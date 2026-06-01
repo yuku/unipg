@@ -2,6 +2,8 @@ module github.com/yuku/unipg
 
 go 1.25
 
+retract v0.2.1 // Published accidentally.
+
 require (
 	github.com/pganalyze/pg_query_go/v6 v6.2.2
 	github.com/stretchr/testify v1.11.1
