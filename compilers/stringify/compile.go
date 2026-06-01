@@ -155,15 +155,11 @@ func (c *Compiler) format(sql string) (string, error) {
 			shouldMultiline := false
 			// Heuristic: top-level parens in specific statements, or following specific keywords
 			_, isMultilineStatement := multilineStatementKeywords[rootKeyword]
-			if isMultilineStatement {
-				if indent == 1 {
-					shouldMultiline = true
-				} else if _, ok := spaceBeforeParen[prevToken]; ok {
+			_, isSpaceKeyword := spaceBeforeParen[prevToken]
+			if (isMultilineStatement && indent == 1) || isSpaceKeyword {
+				if prevToken != "CHECK" {
 					shouldMultiline = true
 				}
-			} else if _, ok := spaceBeforeParen[prevToken]; ok {
-				// E.g. IN ( ... )
-				shouldMultiline = true
 			}
 
 			if shouldMultiline {

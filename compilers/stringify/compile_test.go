@@ -45,9 +45,7 @@ func TestCompiler_Compile(t *testing.T) {
 				CREATE TABLE customers (
 				  id INT PRIMARY KEY,
 				  display_name VARCHAR(50) NOT NULL,
-				  subscription_period INT NOT NULL DEFAULT 6 CHECK (
-				    subscription_period > 0
-				  ),
+				  subscription_period INT NOT NULL DEFAULT 6 CHECK (subscription_period > 0),
 				  privacy_policy_id INT NOT NULL REFERENCES privacy_policies(id)
 				  ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
 				  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -210,6 +208,12 @@ func TestCompiler_Compile(t *testing.T) {
 				CREATE VIEW organization_tags AS
 				SELECT DISTINCT tag
 				FROM organization_taggings;`),
+		},
+		{
+			name:    "alter table add check",
+			sql:     "ALTER TABLE users ADD CHECK (id > 0)",
+			options: []Option{WithPretty()},
+			want:    "ALTER TABLE users ADD CHECK (id > 0);",
 		},
 		{
 			name: "empty input",
