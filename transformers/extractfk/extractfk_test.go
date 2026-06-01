@@ -80,6 +80,48 @@ func TestTransformer_Transform(t *testing.T) {
 		require.Len(t, result.Stmts, 3)
 	})
 
+	t.Run("extract column-level foreign key with deferrable", func(t *testing.T) {
+		input := "CREATE TABLE users (id INT PRIMARY KEY, organization_id INT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE);"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expect 2 statements: [0] CREATE TABLE, [1] ALTER TABLE
+		require.Len(t, result.Stmts, 2)
+
+		// 1. Verify CREATE TABLE (FK and its attributes should be removed)
+		createStmt := result.Stmts[0].Stmt.GetCreateStmt()
+		require.NotNil(t, createStmt)
+		columnDef := createStmt.TableElts[1].GetColumnDef()
+		require.NotNil(t, columnDef)
+		// Only NOT NULL constraint should remain (contype 2)
+		require.Len(t, columnDef.Constraints, 1)
+		require.Equal(t, pg_query.ConstrType_CONSTR_NOTNULL, columnDef.Constraints[0].GetConstraint().Contype)
+
+		// 2. Verify ALTER TABLE
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		require.NotNil(t, alterStmt)
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		require.True(t, constraint.Deferrable, "Deferrable should be moved to ALTER TABLE")
+		require.False(t, constraint.Initdeferred, "Initdeferred should be false (INITIALLY IMMEDIATE)")
+	})
+
+	t.Run("extract column-level foreign key with initially deferred", func(t *testing.T) {
+		input := "CREATE TABLE users (id INT PRIMARY KEY, organization_id INT REFERENCES organizations(id) DEFERRABLE INITIALLY DEFERRED);"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		require.True(t, constraint.Deferrable)
+		require.True(t, constraint.Initdeferred, "Initdeferred should be true (INITIALLY DEFERRED)")
+	})
+
 	t.Run("no foreign keys", func(t *testing.T) {
 		input := "CREATE TABLE users (id INT PRIMARY KEY);"
 		result, err := pg_query.Parse(input)

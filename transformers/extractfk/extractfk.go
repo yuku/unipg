@@ -81,13 +81,39 @@ func (t *Transformer) extractFKsFromColumn(columnDef *pg_query.ColumnDef) []*pg_
 	var extracted []*pg_query.Constraint
 	var remainingConstraints []*pg_query.Node
 
-	for _, consNode := range columnDef.Constraints {
+	for i := 0; i < len(columnDef.Constraints); i++ {
+		consNode := columnDef.Constraints[i]
 		constraint := consNode.GetConstraint()
 		if constraint != nil && constraint.Contype == pg_query.ConstrType_CONSTR_FOREIGN {
 			// Inject column name if it's a column-level FK (FkAttrs is usually empty)
 			if len(constraint.FkAttrs) == 0 {
 				constraint.FkAttrs = []*pg_query.Node{
 					makeStringNode(columnDef.Colname),
+				}
+			}
+
+			// Consume attributes
+		AttrLoop:
+			for j := i + 1; j < len(columnDef.Constraints); j++ {
+				attrNode := columnDef.Constraints[j].GetConstraint()
+				if attrNode == nil {
+					break
+				}
+				switch attrNode.Contype {
+				case pg_query.ConstrType_CONSTR_ATTR_DEFERRABLE:
+					constraint.Deferrable = true
+					i = j // Skip this node in the outer loop
+				case pg_query.ConstrType_CONSTR_ATTR_NOT_DEFERRABLE:
+					constraint.Deferrable = false
+					i = j // Skip this node in the outer loop
+				case pg_query.ConstrType_CONSTR_ATTR_DEFERRED:
+					constraint.Initdeferred = true
+					i = j // Skip this node in the outer loop
+				case pg_query.ConstrType_CONSTR_ATTR_IMMEDIATE:
+					constraint.Initdeferred = false
+					i = j // Skip this node in the outer loop
+				default:
+					break AttrLoop
 				}
 			}
 			extracted = append(extracted, constraint)

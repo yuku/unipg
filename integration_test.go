@@ -57,6 +57,34 @@ func TestIntegration(t *testing.T) {
 			`,
 		},
 		{
+			name:         "extractfk: deferrable",
+			transformers: []unipg.Transformer{extractfk.New()},
+			input: `
+				create table users (
+				  id int primary key,
+				  organization_id int not null references organizations (id) on delete cascade deferrable initially immediate
+				);
+			`,
+			want: `
+				CREATE TABLE users (id int PRIMARY KEY, organization_id int NOT NULL);
+				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE DEFERRABLE
+			`,
+		},
+		{
+			name:         "extractfk: initially deferred",
+			transformers: []unipg.Transformer{extractfk.New()},
+			input: `
+				create table users (
+				  id int primary key,
+				  organization_id int not null references organizations (id) deferrable initially deferred
+				);
+			`,
+			want: `
+				CREATE TABLE users (id int PRIMARY KEY, organization_id int NOT NULL);
+				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
 			name:         "reorder: view and table",
 			transformers: []unipg.Transformer{reorder.New()},
 			input: `
