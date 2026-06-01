@@ -28,4 +28,4 @@
 4. **Style:** Follow standard `gofmt` styling and Go idiomatic practices (e.g., package-level constructors like `text.New()` or `stringify.New()`).
 
 ## Developer Workflow
-- Users construct their CLI by importing `unipg` as a library and initializing the pipeline via `unipg.New(parser, transformers, compiler)`. When writing plugin examples or scaffolding, assume this generic-based workflow.
+- Users import `unipg` as a library and initialize the pipeline via `unipg.New(parser, transformers, compiler)`. When writing plugin examples or scaffolding, assume this generic-based workflow.

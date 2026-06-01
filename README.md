@@ -17,44 +17,9 @@ Managing complex SQL DDL files often involves manual formatting, resolving depen
 - **Plugin Architecture (DIP):** Core interfaces are defined in the root, making it easy to plug in custom implementations. Build custom pipelines using the `Parse -> Transform -> Compile` paradigm.
 - **Go-Native:** Fast execution with minimal dependencies.
 
-## CLI
-
-`unipg` provides a command-line tool that applies a standard set of transformations to your DDL. 
-
-By default, the CLI enables:
-- **comment**: Converts `/** ... */` doc-style comments into formal `COMMENT ON` statements.
-- **extractfk**: Extracts inline foreign keys from `CREATE TABLE` to standalone `ALTER TABLE` statements.
-- **reorder**: Moves `ALTER TABLE` and `CREATE VIEW` statements to the end of the document, ensuring correct dependency order.
-
-### Running without installation
-
-You can process SQL files instantly using `go run`:
-
-```bash
-# Process a file
-go run github.com/yuku/unipg/cmd/unipg@latest schema.sql > output.sql
-
-# Read from stdin
-cat schema.sql | go run github.com/yuku/unipg/cmd/unipg@latest - > output.sql
-```
-
-### Installation
-
-To install the `unipg` binary to your `$GOPATH/bin`:
-
-```bash
-go install github.com/yuku/unipg/cmd/unipg@latest
-```
-
-Once installed, you can use it simply as:
-
-```bash
-unipg schema.sql
-```
-
 ## Library Usage
 
-You can also use `unipg` as a Go library to build custom DDL processing pipelines.
+You can use `unipg` as a Go library to build custom DDL processing pipelines.
 
 ```go
 package main
