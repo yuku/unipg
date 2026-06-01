@@ -152,7 +152,7 @@ func TestTransformer_Transform(t *testing.T) {
 
 	t.Run("reveal constraint name with long identifiers", func(t *testing.T) {
 		transformer := New(WithRevealConstraintName())
-		// 30 chars + 30 chars -> should be balanced, favoring table name
+		// 31 chars + 31 chars -> should be balanced, favoring table name
 		input := "CREATE TABLE t123456789012345678901234567890 (c123456789012345678901234567890 INT REFERENCES teams(id));"
 		result, err := pg_query.Parse(input)
 		require.NoError(t, err)
