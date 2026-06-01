@@ -93,7 +93,12 @@ func (c *Compiler) Compile(tree *pg_query.ParseResult) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("formatting SQL: %w", err)
 		}
-		return formatted, nil
+		sql = formatted
+	}
+
+	sql = strings.TrimRight(sql, " \n\t\r")
+	if sql != "" && !strings.HasSuffix(sql, ";") {
+		sql += ";"
 	}
 
 	return sql, nil

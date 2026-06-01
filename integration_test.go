@@ -31,7 +31,7 @@ func TestIntegration(t *testing.T) {
 				CREATE TABLE users (id INT PRIMARY KEY);
 			`,
 			want: `
-				CREATE TABLE users (id int PRIMARY KEY)
+				CREATE TABLE users (id int PRIMARY KEY);
 			`,
 		},
 		{
@@ -53,7 +53,7 @@ func TestIntegration(t *testing.T) {
 			`,
 			want: `
 				CREATE TABLE users (id int PRIMARY KEY, team_id int);
-				ALTER TABLE users ADD FOREIGN KEY (team_id) REFERENCES teams (id)
+				ALTER TABLE users ADD FOREIGN KEY (team_id) REFERENCES teams (id);
 			`,
 		},
 		{
@@ -67,7 +67,7 @@ func TestIntegration(t *testing.T) {
 			`,
 			want: `
 				CREATE TABLE users (id int PRIMARY KEY, organization_id int NOT NULL);
-				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE DEFERRABLE
+				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE DEFERRABLE;
 			`,
 		},
 		{
@@ -81,7 +81,7 @@ func TestIntegration(t *testing.T) {
 			`,
 			want: `
 				CREATE TABLE users (id int PRIMARY KEY, organization_id int NOT NULL);
-				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) DEFERRABLE INITIALLY DEFERRED
+				ALTER TABLE users ADD FOREIGN KEY (organization_id) REFERENCES organizations (id) DEFERRABLE INITIALLY DEFERRED;
 			`,
 		},
 		{
@@ -125,7 +125,7 @@ func TestIntegration(t *testing.T) {
 			`,
 			want: `
 				CREATE TABLE users (id int PRIMARY KEY, team_id int);
-				ALTER TABLE users ADD CONSTRAINT users_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams (id)
+				ALTER TABLE users ADD CONSTRAINT users_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams (id);
 			`,
 		},
 		{
@@ -245,6 +245,9 @@ func TestIntegration(t *testing.T) {
 			got, err := processor.Process(tt.input)
 			require.NoError(t, err)
 
+			if strings.TrimSpace(tt.want) != "" {
+				require.True(t, strings.HasSuffix(got, ";"), "output should end with a semicolon")
+			}
 			require.Equal(t, normalizeSQL(t, tt.want), normalizeSQL(t, got))
 		})
 	}

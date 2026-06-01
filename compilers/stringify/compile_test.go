@@ -18,7 +18,7 @@ func TestCompiler_Compile(t *testing.T) {
 		{
 			name: "plain DDL",
 			sql:  "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL)",
-			want: "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL)",
+			want: "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL);",
 		},
 		{
 			name:    "pretty DDL",
@@ -28,7 +28,7 @@ func TestCompiler_Compile(t *testing.T) {
 				CREATE TABLE users (
 				  id SERIAL PRIMARY KEY,
 				  name TEXT NOT NULL
-				)`),
+				);`),
 		},
 		{
 			name: "complex table",
@@ -51,7 +51,7 @@ func TestCompiler_Compile(t *testing.T) {
 				  privacy_policy_id INT NOT NULL REFERENCES privacy_policies(id)
 				  ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE,
 				  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-				)`),
+				);`),
 		},
 		{
 			name:    "unique index with function",
@@ -62,7 +62,7 @@ func TestCompiler_Compile(t *testing.T) {
 				ON customers
 				USING BTREE (
 				  jsonb_extract_path_text(metadata, 'region', 'id')
-				)`),
+				);`),
 		},
 		{
 			name:    "alter table add constraint",
@@ -72,7 +72,7 @@ func TestCompiler_Compile(t *testing.T) {
 				ALTER TABLE pricing_rules ADD CONSTRAINT pricing_rules_pricing_id_rank_unique UNIQUE (
 				  pricing_id,
 				  rank
-				) DEFERRABLE INITIALLY DEFERRED`),
+				) DEFERRABLE INITIALLY DEFERRED;`),
 		},
 		{
 			name:    "create view",
@@ -82,13 +82,13 @@ func TestCompiler_Compile(t *testing.T) {
 				CREATE VIEW active_customers AS
 				SELECT id, metadata
 				FROM customers
-				WHERE metadata IS NOT NULL`),
+				WHERE metadata IS NOT NULL;`),
 		},
 		{
 			name:    "create extension",
 			sql:     "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"",
 			options: []Option{WithPretty()},
-			want:    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"",
+			want:    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";",
 		},
 		{
 			name: "composite primary key",
@@ -110,7 +110,7 @@ func TestCompiler_Compile(t *testing.T) {
 				    employee_id,
 				    profile_key
 				  )
-				)`),
+				);`),
 		},
 		{
 			name: "complex table with constraints and types",
@@ -144,7 +144,7 @@ func TestCompiler_Compile(t *testing.T) {
 				    id,
 				    owner_id
 				  )
-				)`),
+				);`),
 		},
 		{
 			name:    "multiple statements",
@@ -157,7 +157,7 @@ func TestCompiler_Compile(t *testing.T) {
 
 				CREATE TABLE posts (
 				  id INT
-				)`),
+				);`),
 		},
 		{
 			name: "create view with joins and subquery",
@@ -200,7 +200,7 @@ func TestCompiler_Compile(t *testing.T) {
 				  user_id,
 				  acted_at
 				)
-				WHERE u.is_deleted = FALSE`),
+				WHERE u.is_deleted = FALSE;`),
 		},
 		{
 			name:    "create view with distinct",
@@ -209,7 +209,12 @@ func TestCompiler_Compile(t *testing.T) {
 			want: dedent(`
 				CREATE VIEW organization_tags AS
 				SELECT DISTINCT tag
-				FROM organization_taggings`),
+				FROM organization_taggings;`),
+		},
+		{
+			name: "empty input",
+			sql:  "",
+			want: "",
 		},
 	}
 
@@ -221,7 +226,7 @@ func TestCompiler_Compile(t *testing.T) {
 
 			got, err := c.Compile(result)
 			require.NoError(t, err)
-			require.Equal(t, strings.TrimSpace(tt.want), strings.TrimSpace(got))
+			require.Equal(t, tt.want, got)
 		})
 	}
 
