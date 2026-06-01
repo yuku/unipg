@@ -87,7 +87,9 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 func (p *Processor[I, O]) cleanupVirtualNodes(tree *pg_query.ParseResult) {
 	var cleanStmts []*pg_query.RawStmt
 	for _, rawStmt := range tree.Stmts {
-		// OBJECT_TYPE_UNDEFINED is used for virtual comment nodes that must not reach the deparser
+		// Skip "virtual" comment nodes used to hold doc-style comments.
+		// These nodes use OBJECT_TYPE_UNDEFINED as a marker and must not reach the deparser/compiler
+		// as they are not valid PostgreSQL DDL.
 		if commentStmt := rawStmt.Stmt.GetCommentStmt(); commentStmt != nil && commentStmt.Objtype == pg_query.ObjectType_OBJECT_TYPE_UNDEFINED {
 			continue
 		}
