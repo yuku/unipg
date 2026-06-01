@@ -152,7 +152,7 @@ func TestTransformer_Transform(t *testing.T) {
 
 	t.Run("reveal constraint name with long identifiers", func(t *testing.T) {
 		transformer := New(WithRevealConstraintName())
-		// 30 chars + 30 chars -> should be balanced
+		// 30 chars + 30 chars -> should be balanced, favoring table name
 		input := "CREATE TABLE t123456789012345678901234567890 (c123456789012345678901234567890 INT REFERENCES teams(id));"
 		result, err := pg_query.Parse(input)
 		require.NoError(t, err)
@@ -162,10 +162,23 @@ func TestTransformer_Transform(t *testing.T) {
 
 		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
 		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
-		// targetTotal = 63 - 5 - 1 = 57. half = 28.
-		// table: 30 -> 28. cols: 30 -> 29.
-		require.Equal(t, "t123456789012345678901234567_c1234567890123456789012345678_fkey", constraint.Conname)
+		// targetTotal = 63 - 5 - 1 = 57. tTarget = 29. cTarget = 28.
+		require.Equal(t, "t1234567890123456789012345678_c123456789012345678901234567_fkey", constraint.Conname)
 		require.LessOrEqual(t, len(constraint.Conname), 63)
+	})
+
+	t.Run("reveal constraint name with specific long case", func(t *testing.T) {
+		transformer := New(WithRevealConstraintName())
+		input := "CREATE TABLE organization_shokujihq_configs (auto_card_settlement_merchant_filter_id CHAR(26) REFERENCES teams(id));"
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		alterStmt := result.Stmts[1].Stmt.GetAlterTableStmt()
+		constraint := alterStmt.Cmds[0].GetAlterTableCmd().Def.GetConstraint()
+		require.Equal(t, "organization_shokujihq_config_auto_card_settlement_merchan_fkey", constraint.Conname)
 	})
 
 	t.Run("reveal constraint name with multi-byte characters", func(t *testing.T) {

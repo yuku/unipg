@@ -186,13 +186,15 @@ func (t *Transformer) postgresStyleName(table, cols, suffix string) string {
 	tLen := len(table)
 	cLen := len(cols)
 
-	half := targetTotal / 2
-	if tLen > half && cLen > half {
-		tLen = half
-		cLen = targetTotal - half
-	} else if tLen > half {
+	tTarget := (targetTotal + 1) / 2 // Favor the first part (table name)
+	cTarget := targetTotal - tTarget
+
+	if tLen > tTarget && cLen > cTarget {
+		tLen = tTarget
+		cLen = cTarget
+	} else if tLen > tTarget {
 		tLen = targetTotal - cLen
-	} else if cLen > half {
+	} else if cLen > cTarget {
 		cLen = targetTotal - tLen
 	}
 
