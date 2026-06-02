@@ -91,7 +91,8 @@ Converts JavaDoc-style comments (`/** ... */`) into PostgreSQL DDL comments (`CO
 * Output
     ```sql
     CREATE TABLE users (
-        id INT PRIMARY KEY
+        id INT PRIMARY KEY,
+        team_id INT
     );
 
     COMMENT ON TABLE users IS 'This is a comment that should be converted to a DDL comment on the users table.
@@ -139,9 +140,9 @@ By using them together, you can ensure that all `CREATE TABLE` statements are de
     FROM users
     JOIN teams ON users.team_id = teams.id;
 
-    -- Without `WithRevealConstraintName` option
+    -- Without `extractfk.WithRevealConstraintName` option
     ALTER TABLE users ADD FOREIGN KEY (team_id) REFERENCES teams(id);
 
-    -- With `WithRevealConstraintName` option
+    -- With `extractfk.WithRevealConstraintName` option
     ALTER TABLE users ADD CONSTRAINT users_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(id);
     ```
