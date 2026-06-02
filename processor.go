@@ -1,3 +1,8 @@
+// Package unipg provides a type-safe, plugin-based pipeline for processing
+// PostgreSQL DDL (Data Definition Language) using an Abstract Syntax Tree (AST).
+//
+// It allows parsing SQL into an AST, applying a series of transformations (plugins),
+// and compiling the result back into a desired output format.
 package unipg
 
 import (
@@ -8,29 +13,36 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
-// Parser takes an input of type I and returns a PostgreSQL AST.
+// Parser takes an input of type I (Input) and parses it into a PostgreSQL AST.
+// Implementations are typically found in the parsers/ subdirectory.
 type Parser[I any] interface {
+	// Parse converts the input into a ParseResult.
 	Parse(input I) (*pg_query.ParseResult, error)
 }
 
 // Transformer mutates a PostgreSQL AST in place.
+// Implementations (plugins) are typically found in the transformers/ subdirectory.
 type Transformer interface {
+	// Transform applies mutations to the provided AST.
 	Transform(tree *pg_query.ParseResult) error
 }
 
-// Compiler takes a PostgreSQL AST and converts it to output of type O.
+// Compiler takes a PostgreSQL AST and converts it to an output of type O (Output).
+// Implementations are typically found in the compilers/ subdirectory.
 type Compiler[O any] interface {
+	// Compile generates the final output from the AST.
 	Compile(tree *pg_query.ParseResult) (O, error)
 }
 
-// Processor is the core pipeline that chains a Parser, optional Transformers, and a Compiler.
+// Processor is the core pipeline that coordinates the Parse, Transform, and Compile phases.
+// It uses generics to maintain type safety for input (I) and output (O).
 type Processor[I any, O any] struct {
 	parser       Parser[I]
 	transformers []Transformer
 	compiler     Compiler[O]
 }
 
-// New creates a new Processor with the given Parser, Transformers, and Compiler.
+// New creates a new Processor with the specified Parser, a sequence of Transformers, and a Compiler.
 func New[I any, O any](
 	parser Parser[I],
 	transformers []Transformer,
@@ -43,7 +55,14 @@ func New[I any, O any](
 	}
 }
 
-// Process executes the pipeline: Parse -> Transform (if any) -> Compile.
+// Process executes the entire pipeline:
+//
+//  1. Parser.Parse(input)
+//  2. Each Transformer.Transform(ast) sequentially
+//  3. Cleanup of virtual nodes
+//  4. Compiler.Compile(ast)
+//
+// If any stage returns an error, processing stops and the error is returned.
 func (p *Processor[I, O]) Process(input I) (O, error) {
 	var zero O
 
@@ -73,7 +92,9 @@ func (p *Processor[I, O]) Process(input I) (O, error) {
 		}
 	}
 
-	// 3. Cleanup virtual nodes before compilation to avoid deparser crashes
+	// 3. Cleanup virtual nodes before compilation to avoid deparser crashes.
+	// Virtual nodes (e.g. holding doc-comments) use ObjectType_UNDEFINED which
+	// is not valid PostgreSQL DDL and causes the deparser to fail.
 	p.cleanupVirtualNodes(ast)
 
 	// 4. Compile

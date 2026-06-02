@@ -1,3 +1,5 @@
+// Package extractfk provides a Transformer that extracts inline foreign key constraints
+// and moves them into standalone ALTER TABLE ADD CONSTRAINT statements.
 package extractfk
 
 import (
@@ -9,22 +11,26 @@ import (
 const pgMaxIdentifierLen = 63
 
 // Transformer extracts inline foreign key constraints from CREATE TABLE statements
-// and converts them into standalone ALTER TABLE statements.
+// and converts them into standalone ALTER TABLE statements. This helps in managing
+// table dependencies by allowing foreign keys to be defined after all tables are created.
 type Transformer struct {
 	revealConstraintName bool
 }
 
-// Option is a functional option for the Transformer.
+// Option is a functional option for configuring the Transformer.
 type Option func(*Transformer)
 
-// WithRevealConstraintName enables automatic generation of constraint names for anonymous foreign keys.
+// WithRevealConstraintName enables automatic generation of constraint names for
+// anonymous foreign keys. Names are generated using a PostgreSQL-compatible format:
+// {tablename}_{columnname}_fkey. If the generated name exceeds 63 bytes, it is
+// automatically truncated while preserving UTF-8 integrity.
 func WithRevealConstraintName() Option {
 	return func(t *Transformer) {
 		t.revealConstraintName = true
 	}
 }
 
-// New creates a new ExtractFK Transformer.
+// New creates a new ExtractFK Transformer with the given options.
 func New(opts ...Option) *Transformer {
 	t := &Transformer{}
 	for _, opt := range opts {
@@ -33,7 +39,8 @@ func New(opts ...Option) *Transformer {
 	return t
 }
 
-// Transform implements unipg.Transformer.
+// Transform implements unipg.Transformer. It scans CREATE TABLE statements in the AST,
+// extracts foreign key constraints, and appends them as ALTER TABLE statements to the end of the AST.
 func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var alterStmts []*pg_query.RawStmt
 

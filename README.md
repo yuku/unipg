@@ -48,6 +48,27 @@ var input, output string
 output, _ = processor.Process(input)
 ```
 
+## Built-in Parsers and Compilers
+
+### Text Parser
+
+The `text` parser parses PostgreSQL SQL from a string input and produces an AST.
+
+Implements `unipg.Parser[string]`.
+
+### File Parser
+
+The `file` parser reads PostgreSQL SQL from list of files and produces an AST.
+Glob patterns are supported (e.g., `schemas/*.sql`).
+
+Implements `unipg.Parser[[]string]`.
+
+### Stringify Compiler
+
+The `stringify` compiler compiles the AST back into a string output.
+
+Implements `unipg.Compiler[string]`.
+
 ## Built-in Transformers
 
 ### Comment Transformer

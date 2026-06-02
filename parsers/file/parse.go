@@ -1,3 +1,5 @@
+// Package file provides a Parser implementation that reads SQL from files.
+// It supports glob patterns and handles multiple files by concatenating them.
 package file
 
 import (
@@ -11,11 +13,12 @@ import (
 )
 
 // Parser reads SQL from files and parses it into a PostgreSQL AST.
+// It leverages text.Parser for the actual parsing logic.
 type Parser struct {
 	textParser *text.Parser
 }
 
-// New creates a new Parser.
+// New creates a new file Parser.
 // Options are passed to the underlying text.Parser.
 func New(opts ...text.Option) *Parser {
 	return &Parser{
@@ -25,8 +28,8 @@ func New(opts ...text.Option) *Parser {
 
 // Parse implements unipg.Parser[[]string].
 // It expands glob patterns in the input paths, reads the contents of all matching files,
-// and parses the concatenated content. Duplicate files are automatically excluded
-// based on their absolute paths.
+// and parses the concatenated content. Duplicate files (resolved by absolute path)
+// are automatically excluded to prevent redundant processing.
 func (p *Parser) Parse(paths []string) (*pg_query.ParseResult, error) {
 	var allFiles []string
 	seen := make(map[string]bool)

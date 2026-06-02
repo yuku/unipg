@@ -1,3 +1,6 @@
+// Package reorder provides a Transformer that reorganizes SQL statements in the AST.
+// It ensures that views and alter table statements are positioned after base table
+// definitions, and performs topological sorting of views based on their dependencies.
 package reorder
 
 import (
@@ -10,7 +13,8 @@ import (
 )
 
 // Transformer moves ALTER TABLE and CREATE VIEW statements to the end of the AST,
-// and topologically sorts CREATE VIEW statements based on their dependencies.
+// and topologically sorts CREATE VIEW statements based on their dependencies to ensure
+// they are created in the correct order.
 type Transformer struct{}
 
 // New creates a new Reorder Transformer.
@@ -18,7 +22,8 @@ func New() *Transformer {
 	return &Transformer{}
 }
 
-// Transform implements unipg.Transformer.
+// Transform implements unipg.Transformer. It reorders the statements in the AST
+// and performs topological sorting on view definitions.
 func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var regularStmts []*pg_query.RawStmt
 	var alterStmts []*pg_query.RawStmt
