@@ -58,7 +58,7 @@ Implements `unipg.Parser[string]`.
 
 ### File Parser
 
-The `file` parser reads PostgreSQL SQL from list of files and produces an AST.
+The `file` parser reads PostgreSQL SQL from a list of files and produces an AST.
 Glob patterns are supported (e.g., `schemas/*.sql`).
 
 Implements `unipg.Parser[[]string]`.
