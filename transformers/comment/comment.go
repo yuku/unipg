@@ -1,3 +1,5 @@
+// Package comment provides a Transformer that converts doc-comments (/** ... */) into
+// native PostgreSQL COMMENT ON statements.
 package comment
 
 import (
@@ -7,6 +9,8 @@ import (
 )
 
 // Transformer associates virtual comment nodes with subsequent DDL statements.
+// It supports attaching comments to tables, views, materialized views, composite types,
+// enum types, and individual table columns.
 type Transformer struct{}
 
 // New creates a new Comment Transformer.
@@ -14,7 +18,9 @@ func New() *Transformer {
 	return &Transformer{}
 }
 
-// Transform implements unipg.Transformer.
+// Transform implements unipg.Transformer. It processes the AST to attach comments
+// to their respective DDL targets and replaces virtual comment nodes with actual
+// CommentStmt nodes.
 func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var processedStmts []*pg_query.RawStmt
 	var pendingComments []string

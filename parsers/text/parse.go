@@ -1,3 +1,5 @@
+// Package text provides a Parser implementation that takes a SQL string as input.
+// It uses pg_query_go to parse the SQL and can optionally extract doc-comments.
 package text
 
 import (
@@ -9,6 +11,7 @@ import (
 )
 
 // Parser parses SQL strings into a PostgreSQL AST.
+// It can be configured to include or exclude doc-comments (/** ... */).
 type Parser struct {
 	excludeComments bool
 }
@@ -16,7 +19,8 @@ type Parser struct {
 // Option is a functional option for configuring the Parser.
 type Option func(*Parser)
 
-// WithoutComments disables extraction of comments from the source SQL.
+// WithoutComments disables extraction of doc-comments from the source SQL.
+// By default, comments starting with /** are extracted as virtual nodes.
 func WithoutComments() Option {
 	return func(p *Parser) {
 		p.excludeComments = true
@@ -32,7 +36,7 @@ func New(opts ...Option) *Parser {
 	return p
 }
 
-// Parse implements unipg.Parser.
+// Parse implements unipg.Parser. It parses the input SQL string into an AST.
 func (p *Parser) Parse(input string) (*pg_query.ParseResult, error) {
 	result, err := pg_query.Parse(input)
 	if err != nil {

@@ -1,3 +1,6 @@
+// Package stringify provides a Compiler implementation that converts a PostgreSQL AST
+// back into a SQL string format. It includes support for pretty-printing and
+// keyword normalization.
 package stringify
 
 import (
@@ -55,6 +58,7 @@ var joinModifiers = makeMap(
 )
 
 // Compiler compiles a PostgreSQL AST back into a SQL string.
+// It can optionally format the output for better readability.
 type Compiler struct {
 	pretty bool
 }
@@ -62,14 +66,15 @@ type Compiler struct {
 // Option is a functional option for the Compiler.
 type Option func(*Compiler)
 
-// WithPretty enables pretty printing of the compiled SQL.
+// WithPretty enables pretty printing of the compiled SQL, including indentation,
+// newlines for major keywords, and keyword capitalization.
 func WithPretty() Option {
 	return func(c *Compiler) {
 		c.pretty = true
 	}
 }
 
-// New creates a new Compiler.
+// New creates a new stringify Compiler with the given options.
 func New(opts ...Option) *Compiler {
 	c := &Compiler{}
 	for _, opt := range opts {
@@ -78,7 +83,8 @@ func New(opts ...Option) *Compiler {
 	return c
 }
 
-// Compile implements unipg.Compiler.
+// Compile implements unipg.Compiler. It converts the provided AST into a SQL string.
+// If the WithPretty option was used, the resulting SQL is formatted.
 func (c *Compiler) Compile(tree *pg_query.ParseResult) (string, error) {
 	if tree == nil {
 		return "", errors.New("tree is nil")
