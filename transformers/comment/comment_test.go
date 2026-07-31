@@ -110,3 +110,42 @@ func TestTransformer_Transform(t *testing.T) {
 		require.NotNil(t, result.Stmts[2].Stmt.GetViewStmt())
 	})
 }
+
+func TestTransformer_Transform_ColumnCommentsFollowDeclarations(t *testing.T) {
+	t.Parallel()
+
+	input := dedent(`
+		CREATE TABLE users (
+			/** first column */
+			first_column text,
+			/**
+			 * This deliberately long comment starts closer to first_column than
+			 * second_column, but it documents the declaration that follows it.
+			 */
+			second_column text
+		);
+	`)
+	result, err := text.New().Parse(input)
+	require.NoError(t, err)
+
+	err = New().Transform(result)
+	require.NoError(t, err)
+
+	require.Len(t, result.Stmts, 3)
+	require.Equal(t, "first_column", commentColumnName(t, result.Stmts[1]))
+	require.Equal(t, "second_column", commentColumnName(t, result.Stmts[2]))
+}
+
+func commentColumnName(t *testing.T, stmt *pg_query.RawStmt) string {
+	t.Helper()
+
+	commentStmt := stmt.Stmt.GetCommentStmt()
+	require.NotNil(t, commentStmt)
+	require.Equal(t, pg_query.ObjectType_OBJECT_COLUMN, commentStmt.Objtype)
+
+	items := commentStmt.Object.GetList().Items
+	require.NotEmpty(t, items)
+	columnName := items[len(items)-1].GetString_()
+	require.NotNil(t, columnName)
+	return columnName.GetSval()
+}

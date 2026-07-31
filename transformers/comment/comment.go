@@ -176,22 +176,18 @@ func (t *Transformer) getTopLevelTarget(rawStmt *pg_query.RawStmt) *commentTarge
 }
 
 func (t *Transformer) findTargetColumn(stmt *pg_query.CreateStmt, location int32) string {
-	var bestCol string
-	var minDiff int32 = -1
+	var previousCol string
 
 	for _, elt := range stmt.TableElts {
 		if col := elt.GetColumnDef(); col != nil {
-			diff := location - col.Location
-			if diff < 0 {
-				diff = -diff
+			if location < col.Location {
+				return col.Colname
 			}
-			if minDiff == -1 || diff < minDiff {
-				minDiff = diff
-				bestCol = col.Colname
-			}
+			previousCol = col.Colname
 		}
 	}
-	return bestCol
+
+	return previousCol
 }
 
 func (t *Transformer) columnToNode(rv *pg_query.RangeVar, colName string) *pg_query.Node {
