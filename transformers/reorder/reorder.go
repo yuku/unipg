@@ -37,17 +37,19 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	result := make([]*pg_query.RawStmt, 0, len(stmts))
 
 	start := 0
+	checkBodies := true
 	for i := 0; i <= len(stmts); i++ {
 		if i < len(stmts) && stmts[i].Stmt.GetVariableSetStmt() == nil {
 			continue
 		}
-		region, err := t.reorderRegion(stmts[start:i])
+		region, err := t.reorderRegion(stmts[start:i], checkBodies)
 		if err != nil {
 			return err
 		}
 		result = append(result, region...)
 		if i < len(stmts) {
 			result = append(result, stmts[i])
+			checkBodies = checksFunctionBodies(stmts[i].Stmt.GetVariableSetStmt(), checkBodies)
 		}
 		start = i + 1
 	}
@@ -59,17 +61,23 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 // reorderRegion reorders the statements between two SET statements. Views and the
 // statements that depend on them, directly or through each other, are sorted and
 // placed after the remaining statements, followed by ALTER TABLE statements.
-func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
-	var regularStmts []*pg_query.RawStmt
-	var alterStmts []*pg_query.RawStmt
-	var lateStmts []*pg_query.RawStmt
+// checkBodies reports whether check_function_bodies is on in this region.
+func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt, checkBodies bool) ([]*pg_query.RawStmt, error) {
+	defs := make([][]string, len(stmts))
+	refs := make([][]string, len(stmts))
+	for i, stmt := range stmts {
+		defs[i] = t.definitions(stmt)
+		refs[i] = t.references(stmt, checkBodies)
+	}
 
 	late := make([]bool, len(stmts))
-	lateNames := make(map[string]bool)
+	firstLateDef := make(map[string]int)
 	markLate := func(i int) {
 		late[i] = true
-		for _, name := range t.definitions(stmts[i]) {
-			lateNames[name] = true
+		for _, name := range defs[i] {
+			if _, ok := firstLateDef[name]; !ok {
+				firstLateDef[name] = i
+			}
 		}
 	}
 	for i, stmt := range stmts {
@@ -78,39 +86,69 @@ func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt) ([]*pg_query.RawS
 		}
 	}
 
-	refs := make([][]string, len(stmts))
-	for i, stmt := range stmts {
-		refs[i] = t.references(stmt)
-	}
-	isLateRef := func(name string) bool { return lateNames[name] }
+	// A statement must stay after the late statements it references, and after
+	// earlier late definitions of a name it redefines (e.g. CREATE OR REPLACE).
 	for changed := true; changed; {
 		changed = false
 		for i, stmt := range stmts {
-			if !late[i] && stmt.Stmt.GetAlterTableStmt() == nil && slices.ContainsFunc(refs[i], isLateRef) {
+			if late[i] || stmt.Stmt.GetAlterTableStmt() != nil {
+				continue
+			}
+			referencesLate := slices.ContainsFunc(refs[i], func(name string) bool {
+				_, ok := firstLateDef[name]
+				return ok
+			})
+			redefinesLate := slices.ContainsFunc(defs[i], func(name string) bool {
+				j, ok := firstLateDef[name]
+				return ok && j < i
+			})
+			if referencesLate || redefinesLate {
 				markLate(i)
 				changed = true
 			}
 		}
 	}
 
+	var regularStmts []*pg_query.RawStmt
+	var alterStmts []*pg_query.RawStmt
 	for i, stmt := range stmts {
 		switch {
 		case stmt.Stmt.GetAlterTableStmt() != nil:
 			alterStmts = append(alterStmts, stmt)
-		case late[i]:
-			lateStmts = append(lateStmts, stmt)
-		default:
+		case !late[i]:
 			regularStmts = append(regularStmts, stmt)
 		}
 	}
 
-	sortedLateStmts, err := t.sortLate(lateStmts)
+	sortedLateStmts, err := t.sortLate(stmts, late, defs, refs)
 	if err != nil {
 		return nil, err
 	}
 
 	result := append(regularStmts, sortedLateStmts...)
 	return append(result, alterStmts...), nil
+}
+
+// checksFunctionBodies returns whether check_function_bodies is on after set, given
+// whether it was on before. When it is off, PostgreSQL does not resolve string bodies
+// of SQL functions at creation time.
+func checksFunctionBodies(set *pg_query.VariableSetStmt, current bool) bool {
+	switch {
+	case set.Kind == pg_query.VariableSetKind_VAR_RESET_ALL:
+		return true
+	case set.Name != "check_function_bodies":
+		return current
+	case set.Kind != pg_query.VariableSetKind_VAR_SET_VALUE || len(set.Args) == 0:
+		return true
+	}
+	value := set.Args[0].GetAConst()
+	if value.GetIval() != nil {
+		return value.GetIval().GetIval() != 0
+	}
+	// PostgreSQL accepts any unambiguous prefix of a boolean keyword.
+	v := strings.ToLower(value.GetSval().GetSval())
+	off := v != "" && (strings.HasPrefix("false", v) || strings.HasPrefix("no", v) || (len(v) >= 2 && strings.HasPrefix("off", v)))
+	return !off
 }
 
 func isView(stmt *pg_query.RawStmt) bool {
@@ -144,6 +182,12 @@ func (t *Transformer) definitions(stmt *pg_query.RawStmt) []string {
 		return []string{relPrefix + t.formatNameList(stmt.Stmt.GetCreateDomainStmt().Domainname)}
 	case stmt.Stmt.GetCreateEnumStmt() != nil:
 		return []string{relPrefix + t.formatNameList(stmt.Stmt.GetCreateEnumStmt().TypeName)}
+	case stmt.Stmt.GetIndexStmt().GetIdxname() != "":
+		index := stmt.Stmt.GetIndexStmt()
+		return []string{relPrefix + t.formatRangeVar(&pg_query.RangeVar{
+			Schemaname: index.GetRelation().GetSchemaname(),
+			Relname:    index.Idxname,
+		})}
 	case t.getFuncName(stmt) != "":
 		return []string{funcPrefix + t.getFuncName(stmt)}
 	}
@@ -152,9 +196,11 @@ func (t *Transformer) definitions(stmt *pg_query.RawStmt) []string {
 
 // references returns the names of the relations, types and functions stmt refers to,
 // including those in a SQL function body that PostgreSQL resolves at creation time.
-func (t *Transformer) references(stmt *pg_query.RawStmt) []string {
+// String bodies are resolved only when checkBodies is set, while SQL-standard bodies
+// are always resolved.
+func (t *Transformer) references(stmt *pg_query.RawStmt, checkBodies bool) []string {
 	roots := []any{stmt.Stmt}
-	if fn := stmt.Stmt.GetCreateFunctionStmt(); fn != nil && fn.SqlBody == nil {
+	if fn := stmt.Stmt.GetCreateFunctionStmt(); fn != nil && fn.SqlBody == nil && checkBodies {
 		if body := t.parseSQLBody(fn); body != nil {
 			roots = append(roots, body)
 		}
@@ -176,7 +222,7 @@ func (t *Transformer) references(stmt *pg_query.RawStmt) []string {
 		for _, name := range t.findFuncCalls(root) {
 			refs = append(refs, funcPrefix+name)
 		}
-		for _, name := range collectNames(root, func(o *pg_query.ObjectWithArgs) string { return t.formatFuncName(o.Objname) }) {
+		for _, name := range collectNames(root, func(o *pg_query.ObjectWithArgs) string { return t.formatNameList(o.Objname) }) {
 			refs = append(refs, funcPrefix+name)
 		}
 	}
@@ -188,26 +234,34 @@ func (t *Transformer) references(stmt *pg_query.RawStmt) []string {
 			if len(names) > 0 {
 				refs = append(refs, relPrefix+t.formatNameList(names[:len(names)-1]))
 			}
-		case pg_query.ObjectType_OBJECT_TABLE, pg_query.ObjectType_OBJECT_VIEW, pg_query.ObjectType_OBJECT_MATVIEW:
-			refs = append(refs, relPrefix+t.formatNameList(names))
+		case pg_query.ObjectType_OBJECT_TABLE, pg_query.ObjectType_OBJECT_VIEW, pg_query.ObjectType_OBJECT_MATVIEW,
+			pg_query.ObjectType_OBJECT_INDEX, pg_query.ObjectType_OBJECT_TYPE, pg_query.ObjectType_OBJECT_DOMAIN:
+			if len(names) > 0 {
+				refs = append(refs, relPrefix+t.formatNameList(names))
+			}
 		}
 	}
 
 	return refs
 }
 
-// formatNameList formats a qualified name the same way as formatRangeVar.
+// nameSep joins the components of a qualified name in keys. PostgreSQL identifiers
+// cannot contain NUL, so app.f and "app.f" never share a key.
+const nameSep = "\x00"
+
+// formatNameList formats a qualified name as a key, the same way as formatRangeVar.
 func (t *Transformer) formatNameList(nodes []*pg_query.Node) string {
 	parts := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		parts = append(parts, node.GetString_().GetSval())
 	}
-	return strings.Join(parts, ".")
+	return strings.Join(parts, nameSep)
 }
 
-// funcNameSep joins the components of a qualified function name. PostgreSQL
-// identifiers cannot contain NUL, so app.f and "app.f" never share a key.
-const funcNameSep = "\x00"
+// displayName turns a key back into a qualified name for messages.
+func displayName(key string) string {
+	return strings.ReplaceAll(key, nameSep, ".")
+}
 
 // hoistFunctions moves a CREATE FUNCTION statement right before the first
 // CREATE TABLE that calls it, if that table precedes every definition of the
@@ -248,7 +302,7 @@ func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawS
 		if stmt.Stmt.GetVariableSetStmt() != nil {
 			clear(firstCaller)
 			for name := range defined {
-				if !strings.Contains(name, funcNameSep) {
+				if !strings.Contains(name, nameSep) {
 					delete(defined, name)
 				}
 			}
@@ -342,60 +396,74 @@ func (t *Transformer) getFuncName(stmt *pg_query.RawStmt) string {
 	if fn == nil || fn.IsProcedure {
 		return ""
 	}
-	return t.formatFuncName(fn.Funcname)
+	return t.formatNameList(fn.Funcname)
 }
 
-func (t *Transformer) formatFuncName(nodes []*pg_query.Node) string {
-	parts := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		parts = append(parts, node.GetString_().GetSval())
-	}
-	return strings.Join(parts, funcNameSep)
-}
-
-// sortLate topologically sorts views and the statements that depend on them. Views
-// that are ready at the same time are ordered by name, and other statements keep their
-// relative order after them, so the output is deterministic.
-func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
+// sortLate topologically sorts the late statements of a region, which are views and
+// the statements that depend on them. defs and refs hold the names each statement of
+// the region defines and references. Views that are ready at the same time are
+// ordered by name, and other statements keep their relative order after them, so the
+// output is deterministic.
+func (t *Transformer) sortLate(stmts []*pg_query.RawStmt, late []bool, defs, refs [][]string) ([]*pg_query.RawStmt, error) {
 	keys := make([]string, len(stmts))
 	definers := make(map[string][]int)
+	lateViews := make(map[string]bool)
 	for i, stmt := range stmts {
+		for _, name := range defs[i] {
+			definers[name] = append(definers[name], i)
+		}
+		if !late[i] {
+			continue
+		}
 		if isView(stmt) {
 			keys[i] = t.getViewName(stmt)
-			if _, exists := definers[relPrefix+keys[i]]; exists {
-				return nil, fmt.Errorf("duplicate view statement for %s", keys[i])
+			if lateViews[keys[i]] {
+				return nil, fmt.Errorf("duplicate view statement for %s", displayName(keys[i]))
 			}
+			lateViews[keys[i]] = true
 		} else {
 			// UTF-8 never contains 0xff, so these keys sort after every view name.
 			keys[i] = fmt.Sprintf("\xff%08d", i)
-		}
-		for _, name := range t.definitions(stmt) {
-			definers[name] = append(definers[name], i)
 		}
 	}
 
 	inDegree := make([]int, len(stmts))
 	dependents := make([][]int, len(stmts))
-	for i, stmt := range stmts {
-		for _, ref := range t.references(stmt) {
+	addEdge := func(from, to int) {
+		dependents[from] = append(dependents[from], to)
+		inDegree[to]++
+	}
+	for i := range stmts {
+		if !late[i] {
+			continue
+		}
+		for _, ref := range refs[i] {
 			for _, j := range t.prerequisites(definers[ref], i) {
-				if j != i {
-					dependents[j] = append(dependents[j], i)
-					inDegree[i]++
+				if j != i && late[j] {
+					addEdge(j, i)
 				}
+			}
+		}
+		for _, name := range defs[i] {
+			if j := lastLateBefore(definers[name], late, i); j >= 0 {
+				addEdge(j, i)
+			}
+		}
+	}
+
+	var ready []int
+	count := 0
+	for i := range stmts {
+		if late[i] {
+			count++
+			if inDegree[i] == 0 {
+				ready = append(ready, i)
 			}
 		}
 	}
 
 	byKey := func(a, b int) int { return strings.Compare(keys[a], keys[b]) }
-	var ready []int
-	for i := range stmts {
-		if inDegree[i] == 0 {
-			ready = append(ready, i)
-		}
-	}
-
-	result := make([]*pg_query.RawStmt, 0, len(stmts))
+	result := make([]*pg_query.RawStmt, 0, count)
 	for len(ready) > 0 {
 		slices.SortFunc(ready, byKey)
 		curr := ready[0]
@@ -410,7 +478,7 @@ func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, 
 		}
 	}
 
-	if len(result) != len(stmts) {
+	if len(result) != count {
 		var remaining []string
 		for i, degree := range inDegree {
 			if degree > 0 {
@@ -422,6 +490,18 @@ func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, 
 	}
 
 	return result, nil
+}
+
+// lastLateBefore returns the last late definer in defs before index i, or -1. Successive
+// definitions of a name, such as CREATE OR REPLACE, must keep their order.
+func lastLateBefore(defs []int, late []bool, i int) int {
+	last := -1
+	for _, j := range defs {
+		if j < i && late[j] {
+			last = j
+		}
+	}
+	return last
 }
 
 // prerequisites returns the definitions among defs that the statement at index i
@@ -438,10 +518,10 @@ func (t *Transformer) prerequisites(defs []int, i int) []int {
 // describe names stmt for error messages, preferring the view name in key.
 func (t *Transformer) describe(stmt *pg_query.RawStmt, key string) string {
 	if isView(stmt) {
-		return key
+		return displayName(key)
 	}
 	if defs := t.definitions(stmt); len(defs) > 0 {
-		return strings.TrimPrefix(strings.TrimPrefix(defs[0], relPrefix), funcPrefix)
+		return displayName(strings.TrimPrefix(strings.TrimPrefix(defs[0], relPrefix), funcPrefix))
 	}
 	return "statement at offset " + fmt.Sprint(stmt.StmtLocation)
 }
@@ -463,14 +543,14 @@ func (t *Transformer) formatRangeVar(rv *pg_query.RangeVar) string {
 		return ""
 	}
 	if rv.Schemaname != "" {
-		return rv.Schemaname + "." + rv.Relname
+		return rv.Schemaname + nameSep + rv.Relname
 	}
 	return rv.Relname
 }
 
 func (t *Transformer) findFuncCalls(node any) []string {
 	return collectNames(node, func(fc *pg_query.FuncCall) string {
-		return t.formatFuncName(fc.Funcname)
+		return t.formatNameList(fc.Funcname)
 	})
 }
 
