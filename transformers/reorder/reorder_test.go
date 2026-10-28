@@ -416,6 +416,25 @@ func TestTransformer_Transform(t *testing.T) {
 		requireUnchanged(t, transformer, input)
 	})
 
+	t.Run("place views after functions they call", func(t *testing.T) {
+		input := `
+			CREATE VIEW v AS SELECT f() AS x;
+			CREATE MATERIALIZED VIEW mv AS SELECT f() AS x;
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 1;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: f, mv, v
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "f", funcName(result.Stmts[0]))
+		require.Equal(t, "mv", result.Stmts[1].Stmt.GetCreateTableAsStmt().Into.Rel.Relname)
+		require.Equal(t, "v", result.Stmts[2].Stmt.GetViewStmt().View.Relname)
+	})
+
 	t.Run("do not move create or replace procedure", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT);
