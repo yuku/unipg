@@ -64,26 +64,41 @@ func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt) ([]*pg_query.RawS
 	var alterStmts []*pg_query.RawStmt
 	var lateStmts []*pg_query.RawStmt
 
+	late := make([]bool, len(stmts))
 	lateNames := make(map[string]bool)
-	for _, stmt := range stmts {
+	markLate := func(i int) {
+		late[i] = true
+		for _, name := range t.definitions(stmts[i]) {
+			lateNames[name] = true
+		}
+	}
+	for i, stmt := range stmts {
 		if isView(stmt) {
-			for _, name := range t.definitions(stmt) {
-				lateNames[name] = true
+			markLate(i)
+		}
+	}
+
+	refs := make([][]string, len(stmts))
+	for i, stmt := range stmts {
+		refs[i] = t.references(stmt)
+	}
+	isLateRef := func(name string) bool { return lateNames[name] }
+	for changed := true; changed; {
+		changed = false
+		for i, stmt := range stmts {
+			if !late[i] && stmt.Stmt.GetAlterTableStmt() == nil && slices.ContainsFunc(refs[i], isLateRef) {
+				markLate(i)
+				changed = true
 			}
 		}
 	}
 
-	for _, stmt := range stmts {
+	for i, stmt := range stmts {
 		switch {
 		case stmt.Stmt.GetAlterTableStmt() != nil:
 			alterStmts = append(alterStmts, stmt)
-		case isView(stmt):
+		case late[i]:
 			lateStmts = append(lateStmts, stmt)
-		case slices.ContainsFunc(t.references(stmt), func(name string) bool { return lateNames[name] }):
-			lateStmts = append(lateStmts, stmt)
-			for _, name := range t.definitions(stmt) {
-				lateNames[name] = true
-			}
 		default:
 			regularStmts = append(regularStmts, stmt)
 		}
@@ -121,6 +136,14 @@ func (t *Transformer) definitions(stmt *pg_query.RawStmt) []string {
 		return []string{relPrefix + t.getViewName(stmt)}
 	case stmt.Stmt.GetCreateStmt() != nil:
 		return []string{relPrefix + t.formatRangeVar(stmt.Stmt.GetCreateStmt().Relation)}
+	case stmt.Stmt.GetCreateTableAsStmt() != nil:
+		return []string{relPrefix + t.formatRangeVar(stmt.Stmt.GetCreateTableAsStmt().GetInto().GetRel())}
+	case stmt.Stmt.GetCompositeTypeStmt() != nil:
+		return []string{relPrefix + t.formatRangeVar(stmt.Stmt.GetCompositeTypeStmt().Typevar)}
+	case stmt.Stmt.GetCreateDomainStmt() != nil:
+		return []string{relPrefix + t.formatNameList(stmt.Stmt.GetCreateDomainStmt().Domainname)}
+	case stmt.Stmt.GetCreateEnumStmt() != nil:
+		return []string{relPrefix + t.formatNameList(stmt.Stmt.GetCreateEnumStmt().TypeName)}
 	case t.getFuncName(stmt) != "":
 		return []string{funcPrefix + t.getFuncName(stmt)}
 	}
@@ -139,13 +162,21 @@ func (t *Transformer) references(stmt *pg_query.RawStmt) []string {
 
 	var refs []string
 	for _, root := range roots {
+		// A CTE shadows a relation of the same unqualified name. Scopes are not
+		// tracked, so a CTE name hides that relation anywhere in the statement.
+		ctes := collectNames(root, func(cte *pg_query.CommonTableExpr) string { return cte.Ctename })
 		for _, name := range collectNames(root, t.formatRangeVar) {
-			refs = append(refs, relPrefix+name)
+			if !slices.Contains(ctes, name) {
+				refs = append(refs, relPrefix+name)
+			}
 		}
 		for _, name := range collectNames(root, func(tn *pg_query.TypeName) string { return t.formatNameList(tn.Names) }) {
 			refs = append(refs, relPrefix+name)
 		}
 		for _, name := range t.findFuncCalls(root) {
+			refs = append(refs, funcPrefix+name)
+		}
+		for _, name := range collectNames(root, func(o *pg_query.ObjectWithArgs) string { return t.formatFuncName(o.Objname) }) {
 			refs = append(refs, funcPrefix+name)
 		}
 	}
@@ -347,7 +378,7 @@ func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, 
 	dependents := make([][]int, len(stmts))
 	for i, stmt := range stmts {
 		for _, ref := range t.references(stmt) {
-			for _, j := range definers[ref] {
+			for _, j := range t.prerequisites(definers[ref], i) {
 				if j != i {
 					dependents[j] = append(dependents[j], i)
 					inDegree[i]++
@@ -391,6 +422,17 @@ func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, 
 	}
 
 	return result, nil
+}
+
+// prerequisites returns the definitions among defs that the statement at index i
+// depends on. When a name has several definitions, such as function overloads, a
+// reference following some of them was resolved against those in the original order,
+// so only they are prerequisites. Otherwise every definition is.
+func (t *Transformer) prerequisites(defs []int, i int) []int {
+	if preceding := slices.DeleteFunc(slices.Clone(defs), func(j int) bool { return j >= i }); len(preceding) > 0 {
+		return preceding
+	}
+	return defs
 }
 
 // describe names stmt for error messages, preferring the view name in key.
