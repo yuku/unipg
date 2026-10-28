@@ -1,7 +1,8 @@
 // Package reorder provides a Transformer that reorganizes SQL statements in the AST.
-// It ensures that CREATE [OR REPLACE] FUNCTION statements are positioned before base table
-// definitions, views and alter table statements are positioned after them, and performs
-// topological sorting of views based on their dependencies.
+// CREATE [OR REPLACE] FUNCTION statements called by a CREATE TABLE (e.g. in DEFAULT or
+// CHECK expressions) are moved right before that table. CREATE VIEW and ALTER TABLE
+// statements are moved after table definitions, and views are topologically sorted
+// based on their dependencies.
 package reorder
 
 import (
@@ -13,10 +14,10 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
-// Transformer moves CREATE [OR REPLACE] FUNCTION statements before the first CREATE TABLE
-// statement, moves ALTER TABLE and CREATE VIEW statements to the end of the AST,
-// and topologically sorts CREATE VIEW statements based on their dependencies to ensure
-// they are created in the correct order.
+// Transformer moves CREATE [OR REPLACE] FUNCTION statements right before the first
+// CREATE TABLE statement that calls them, moves ALTER TABLE and CREATE VIEW statements
+// to the end of the AST, and topologically sorts CREATE VIEW statements based on their
+// dependencies to ensure they are created in the correct order.
 type Transformer struct{}
 
 // New creates a new Reorder Transformer.
@@ -31,29 +32,8 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var alterStmts []*pg_query.RawStmt
 	var viewStmts []*pg_query.RawStmt
 
-	// Functions may be referenced by tables (e.g. in DEFAULT or CHECK expressions),
-	// so they are placed right before the first CREATE TABLE. Placing them at the very
-	// beginning would break statements they depend on, such as CREATE SCHEMA or CREATE TYPE.
-	var funcStmts []*pg_query.RawStmt
-	hasCreateTable := false
-	for _, rawStmt := range tree.Stmts {
+	for _, rawStmt := range t.hoistFunctions(tree.Stmts) {
 		switch {
-		case isCreateFunction(rawStmt):
-			funcStmts = append(funcStmts, rawStmt)
-		case rawStmt.Stmt.GetCreateStmt() != nil:
-			hasCreateTable = true
-		}
-	}
-	funcsPlaced := !hasCreateTable
-
-	for _, rawStmt := range tree.Stmts {
-		switch {
-		case isCreateFunction(rawStmt) && hasCreateTable:
-			// Already collected in funcStmts.
-		case rawStmt.Stmt.GetCreateStmt() != nil && !funcsPlaced:
-			regularStmts = append(regularStmts, funcStmts...)
-			regularStmts = append(regularStmts, rawStmt)
-			funcsPlaced = true
 		case rawStmt.Stmt.GetAlterTableStmt() != nil:
 			alterStmts = append(alterStmts, rawStmt)
 		case rawStmt.Stmt.GetViewStmt() != nil || (rawStmt.Stmt.GetCreateTableAsStmt() != nil && rawStmt.Stmt.GetCreateTableAsStmt().Objtype == pg_query.ObjectType_OBJECT_MATVIEW):
@@ -74,9 +54,81 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	return nil
 }
 
-func isCreateFunction(stmt *pg_query.RawStmt) bool {
+// hoistFunctions moves each CREATE FUNCTION statement right before the first
+// CREATE TABLE that calls it, if that table precedes the function. Other functions
+// are left in place, since they may depend on tables or types defined before them
+// (e.g. RETURNS SETOF <table> or a LANGUAGE sql body reading a table).
+// A function is not moved across a SET statement, as that could change the
+// search_path or other settings it is created under.
+func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawStmt {
+	firstCaller := make(map[string]int)
+	for i, stmt := range stmts {
+		createStmt := stmt.Stmt.GetCreateStmt()
+		if createStmt == nil {
+			continue
+		}
+		for _, name := range t.findFuncCalls(createStmt) {
+			if _, exists := firstCaller[name]; !exists {
+				firstCaller[name] = i
+			}
+		}
+	}
+
+	hoisted := make(map[int][]*pg_query.RawStmt)
+	moved := make(map[int]bool)
+	for i, stmt := range stmts {
+		name := t.getFuncName(stmt)
+		if name == "" {
+			continue
+		}
+		target, ok := firstCaller[name]
+		if !ok || target > i || containsSetStmt(stmts[target:i]) {
+			continue
+		}
+		hoisted[target] = append(hoisted[target], stmt)
+		moved[i] = true
+	}
+
+	if len(moved) == 0 {
+		return stmts
+	}
+
+	result := make([]*pg_query.RawStmt, 0, len(stmts))
+	for i, stmt := range stmts {
+		if moved[i] {
+			continue
+		}
+		result = append(result, hoisted[i]...)
+		result = append(result, stmt)
+	}
+	return result
+}
+
+func containsSetStmt(stmts []*pg_query.RawStmt) bool {
+	for _, stmt := range stmts {
+		if stmt.Stmt.GetVariableSetStmt() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// getFuncName returns the name of a CREATE FUNCTION statement, or "" if stmt is not one.
+// Procedures are excluded because they cannot be called from table expressions.
+func (t *Transformer) getFuncName(stmt *pg_query.RawStmt) string {
 	fn := stmt.Stmt.GetCreateFunctionStmt()
-	return fn != nil && !fn.IsProcedure
+	if fn == nil || fn.IsProcedure {
+		return ""
+	}
+	return t.formatFuncName(fn.Funcname)
+}
+
+func (t *Transformer) formatFuncName(nodes []*pg_query.Node) string {
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts = append(parts, node.GetString_().GetSval())
+	}
+	return strings.Join(parts, ".")
 }
 
 func (t *Transformer) sortViews(viewStmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
@@ -207,7 +259,19 @@ func (t *Transformer) formatRangeVar(rv *pg_query.RangeVar) string {
 }
 
 func (t *Transformer) findDependencies(node *pg_query.Node) []string {
-	var deps []string
+	return collectNames(node, t.formatRangeVar)
+}
+
+func (t *Transformer) findFuncCalls(node *pg_query.CreateStmt) []string {
+	return collectNames(node, func(fc *pg_query.FuncCall) string {
+		return t.formatFuncName(fc.Funcname)
+	})
+}
+
+// collectNames walks the AST under root and returns the unique non-empty names
+// produced by nameOf for every node of type T, in order of first appearance.
+func collectNames[T any](root any, nameOf func(T) string) []string {
+	var names []string
 	var walk func(v reflect.Value)
 	walk = func(v reflect.Value) {
 		if !v.IsValid() {
@@ -217,12 +281,10 @@ func (t *Transformer) findDependencies(node *pg_query.Node) []string {
 			if v.IsNil() {
 				return
 			}
-			if rv, ok := v.Interface().(*pg_query.RangeVar); ok {
-				name := t.formatRangeVar(rv)
-				if name != "" {
-					deps = append(deps, name)
+			if n, ok := v.Interface().(T); ok {
+				if name := nameOf(n); name != "" {
+					names = append(names, name)
 				}
-				return
 			}
 			walk(v.Elem())
 			return
@@ -245,16 +307,16 @@ func (t *Transformer) findDependencies(node *pg_query.Node) []string {
 			}
 		}
 	}
-	walk(reflect.ValueOf(node))
+	walk(reflect.ValueOf(root))
 
-	seen := make(map[string]bool, len(deps))
-	var uniqueDeps []string
-	for _, dep := range deps {
-		if !seen[dep] {
-			seen[dep] = true
-			uniqueDeps = append(uniqueDeps, dep)
+	seen := make(map[string]bool, len(names))
+	var uniqueNames []string
+	for _, name := range names {
+		if !seen[name] {
+			seen[name] = true
+			uniqueNames = append(uniqueNames, name)
 		}
 	}
 
-	return uniqueDeps
+	return uniqueNames
 }

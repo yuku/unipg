@@ -143,7 +143,7 @@ func TestTransformer_Transform(t *testing.T) {
 		}
 	})
 
-	t.Run("move create or replace function before create table", func(t *testing.T) {
+	t.Run("move function called in check before create table", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT, name TEXT CHECK (is_valid_name(name)));
 			CREATE OR REPLACE FUNCTION is_valid_name(n TEXT) RETURNS BOOLEAN AS $$ SELECT n <> '' $$ LANGUAGE sql;
@@ -155,16 +155,17 @@ func TestTransformer_Transform(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Len(t, result.Stmts, 2)
-		require.NotNil(t, result.Stmts[0].Stmt.GetCreateFunctionStmt())
+		require.Equal(t, "is_valid_name", funcName(result.Stmts[0]))
 		require.NotNil(t, result.Stmts[1].Stmt.GetCreateStmt())
 	})
 
-	t.Run("place functions right before the first create table", func(t *testing.T) {
+	t.Run("move function right before the first table calling it", func(t *testing.T) {
 		input := `
 			CREATE SCHEMA app;
-			CREATE TABLE app.users (id INT);
+			CREATE TABLE app.users (id INT DEFAULT app.f1());
+			CREATE TABLE app.posts (id INT CHECK (id > app.f2()));
+			CREATE TABLE app.tags (id INT DEFAULT app.f1());
 			CREATE OR REPLACE FUNCTION app.f1() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
-			CREATE TABLE app.posts (id INT);
 			CREATE OR REPLACE FUNCTION app.f2() RETURNS INT AS $$ SELECT 2 $$ LANGUAGE sql;
 		`
 		result, err := pg_query.Parse(input)
@@ -173,20 +174,21 @@ func TestTransformer_Transform(t *testing.T) {
 		err = transformer.Transform(result)
 		require.NoError(t, err)
 
-		// Expected: CREATE SCHEMA, f1, f2, users, posts
-		require.Len(t, result.Stmts, 5)
+		// Expected: CREATE SCHEMA, f1, users, f2, posts, tags
+		require.Len(t, result.Stmts, 6)
 		require.NotNil(t, result.Stmts[0].Stmt.GetCreateSchemaStmt())
-		require.Equal(t, "f1", result.Stmts[1].Stmt.GetCreateFunctionStmt().Funcname[1].GetString_().Sval)
-		require.Equal(t, "f2", result.Stmts[2].Stmt.GetCreateFunctionStmt().Funcname[1].GetString_().Sval)
-		require.Equal(t, "users", result.Stmts[3].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "f1", funcName(result.Stmts[1]))
+		require.Equal(t, "users", result.Stmts[2].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "f2", funcName(result.Stmts[3]))
 		require.Equal(t, "posts", result.Stmts[4].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "tags", result.Stmts[5].Stmt.GetCreateStmt().Relation.Relname)
 	})
 
-	t.Run("keep function position when there is no create table", func(t *testing.T) {
+	t.Run("move nested function calls and keep their relative order", func(t *testing.T) {
 		input := `
-			CREATE SCHEMA app;
-			CREATE OR REPLACE FUNCTION app.f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
-			CREATE TYPE app.mood AS ENUM ('happy', 'sad');
+			CREATE TABLE users (id INT CHECK (f2(f1(id))));
+			CREATE FUNCTION f1(n INT) RETURNS INT AS $$ SELECT n $$ LANGUAGE sql;
+			CREATE OR REPLACE FUNCTION f2(n INT) RETURNS BOOLEAN AS $$ SELECT n > 0 $$ LANGUAGE sql;
 		`
 		result, err := pg_query.Parse(input)
 		require.NoError(t, err)
@@ -194,17 +196,34 @@ func TestTransformer_Transform(t *testing.T) {
 		err = transformer.Transform(result)
 		require.NoError(t, err)
 
+		// Expected: f1, f2, users
 		require.Len(t, result.Stmts, 3)
-		require.NotNil(t, result.Stmts[0].Stmt.GetCreateSchemaStmt())
-		require.NotNil(t, result.Stmts[1].Stmt.GetCreateFunctionStmt())
-		require.NotNil(t, result.Stmts[2].Stmt.GetCreateEnumStmt())
+		require.Equal(t, "f1", funcName(result.Stmts[0]))
+		require.Equal(t, "f2", funcName(result.Stmts[1]))
+		require.NotNil(t, result.Stmts[2].Stmt.GetCreateStmt())
 	})
 
-	t.Run("move create function without or replace before create table", func(t *testing.T) {
+	t.Run("move function called in generated column", func(t *testing.T) {
+		input := `
+			CREATE TABLE users (id INT, doubled INT GENERATED ALWAYS AS (double_it(id)) STORED);
+			CREATE FUNCTION double_it(n INT) RETURNS INT IMMUTABLE AS $$ SELECT n * 2 $$ LANGUAGE sql;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		require.Len(t, result.Stmts, 2)
+		require.Equal(t, "double_it", funcName(result.Stmts[0]))
+		require.NotNil(t, result.Stmts[1].Stmt.GetCreateStmt())
+	})
+
+	t.Run("do not move functions not called by any table", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT);
-			CREATE FUNCTION f1() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
-			CREATE OR REPLACE FUNCTION f2() RETURNS INT AS $$ SELECT 2 $$ LANGUAGE sql;
+			CREATE FUNCTION all_users() RETURNS SETOF users AS $$ SELECT * FROM users $$ LANGUAGE sql;
+			CREATE FUNCTION count_users() RETURNS BIGINT BEGIN ATOMIC SELECT count(*) FROM users; END;
 		`
 		result, err := pg_query.Parse(input)
 		require.NoError(t, err)
@@ -212,11 +231,65 @@ func TestTransformer_Transform(t *testing.T) {
 		err = transformer.Transform(result)
 		require.NoError(t, err)
 
-		// Expected: f1, f2, users (functions keep their relative order)
 		require.Len(t, result.Stmts, 3)
-		require.Equal(t, "f1", result.Stmts[0].Stmt.GetCreateFunctionStmt().Funcname[0].GetString_().Sval)
-		require.Equal(t, "f2", result.Stmts[1].Stmt.GetCreateFunctionStmt().Funcname[0].GetString_().Sval)
+		require.NotNil(t, result.Stmts[0].Stmt.GetCreateStmt())
+		require.Equal(t, "all_users", funcName(result.Stmts[1]))
+		require.Equal(t, "count_users", funcName(result.Stmts[2]))
+	})
+
+	t.Run("do not move function already defined before the table", func(t *testing.T) {
+		input := `
+			CREATE TYPE mood AS ENUM ('happy', 'sad');
+			CREATE FUNCTION default_mood() RETURNS mood AS $$ SELECT 'happy'::mood $$ LANGUAGE sql;
+			CREATE TABLE users (id INT, m mood DEFAULT default_mood());
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		require.Len(t, result.Stmts, 3)
+		require.NotNil(t, result.Stmts[0].Stmt.GetCreateEnumStmt())
+		require.Equal(t, "default_mood", funcName(result.Stmts[1]))
 		require.NotNil(t, result.Stmts[2].Stmt.GetCreateStmt())
+	})
+
+	t.Run("do not move function across set statement", func(t *testing.T) {
+		input := `
+			CREATE TABLE users (id INT DEFAULT f());
+			SET search_path = app;
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		require.Len(t, result.Stmts, 3)
+		require.NotNil(t, result.Stmts[0].Stmt.GetCreateStmt())
+		require.NotNil(t, result.Stmts[1].Stmt.GetVariableSetStmt())
+		require.Equal(t, "f", funcName(result.Stmts[2]))
+	})
+
+	t.Run("match schema-qualified function names exactly", func(t *testing.T) {
+		input := `
+			CREATE TABLE users (id INT DEFAULT app.f());
+			CREATE FUNCTION other.f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+			CREATE FUNCTION app.f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: app.f, users, other.f
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "app", result.Stmts[0].Stmt.GetCreateFunctionStmt().Funcname[0].GetString_().Sval)
+		require.NotNil(t, result.Stmts[1].Stmt.GetCreateStmt())
+		require.Equal(t, "other", result.Stmts[2].Stmt.GetCreateFunctionStmt().Funcname[0].GetString_().Sval)
 	})
 
 	t.Run("do not move create or replace procedure", func(t *testing.T) {
@@ -234,4 +307,10 @@ func TestTransformer_Transform(t *testing.T) {
 		require.NotNil(t, result.Stmts[0].Stmt.GetCreateStmt())
 		require.NotNil(t, result.Stmts[1].Stmt.GetCreateFunctionStmt())
 	})
+}
+
+// funcName returns the unqualified name of a CREATE FUNCTION statement.
+func funcName(stmt *pg_query.RawStmt) string {
+	names := stmt.Stmt.GetCreateFunctionStmt().Funcname
+	return names[len(names)-1].GetString_().Sval
 }
