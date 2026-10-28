@@ -1,6 +1,7 @@
 // Package reorder provides a Transformer that reorganizes SQL statements in the AST.
-// It ensures that views and alter table statements are positioned after base table
-// definitions, and performs topological sorting of views based on their dependencies.
+// It ensures that CREATE [OR REPLACE] FUNCTION statements are positioned before base table
+// definitions, views and alter table statements are positioned after them, and performs
+// topological sorting of views based on their dependencies.
 package reorder
 
 import (
@@ -12,7 +13,8 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
-// Transformer moves ALTER TABLE and CREATE VIEW statements to the end of the AST,
+// Transformer moves CREATE [OR REPLACE] FUNCTION statements before the first CREATE TABLE
+// statement, moves ALTER TABLE and CREATE VIEW statements to the end of the AST,
 // and topologically sorts CREATE VIEW statements based on their dependencies to ensure
 // they are created in the correct order.
 type Transformer struct{}
@@ -29,8 +31,29 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	var alterStmts []*pg_query.RawStmt
 	var viewStmts []*pg_query.RawStmt
 
+	// Functions may be referenced by tables (e.g. in DEFAULT or CHECK expressions),
+	// so they are placed right before the first CREATE TABLE. Placing them at the very
+	// beginning would break statements they depend on, such as CREATE SCHEMA or CREATE TYPE.
+	var funcStmts []*pg_query.RawStmt
+	hasCreateTable := false
 	for _, rawStmt := range tree.Stmts {
 		switch {
+		case isCreateFunction(rawStmt):
+			funcStmts = append(funcStmts, rawStmt)
+		case rawStmt.Stmt.GetCreateStmt() != nil:
+			hasCreateTable = true
+		}
+	}
+	funcsPlaced := !hasCreateTable
+
+	for _, rawStmt := range tree.Stmts {
+		switch {
+		case isCreateFunction(rawStmt) && hasCreateTable:
+			// Already collected in funcStmts.
+		case rawStmt.Stmt.GetCreateStmt() != nil && !funcsPlaced:
+			regularStmts = append(regularStmts, funcStmts...)
+			regularStmts = append(regularStmts, rawStmt)
+			funcsPlaced = true
 		case rawStmt.Stmt.GetAlterTableStmt() != nil:
 			alterStmts = append(alterStmts, rawStmt)
 		case rawStmt.Stmt.GetViewStmt() != nil || (rawStmt.Stmt.GetCreateTableAsStmt() != nil && rawStmt.Stmt.GetCreateTableAsStmt().Objtype == pg_query.ObjectType_OBJECT_MATVIEW):
@@ -49,6 +72,11 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	tree.Stmts = append(tree.Stmts, alterStmts...)
 
 	return nil
+}
+
+func isCreateFunction(stmt *pg_query.RawStmt) bool {
+	fn := stmt.Stmt.GetCreateFunctionStmt()
+	return fn != nil && !fn.IsProcedure
 }
 
 func (t *Transformer) sortViews(viewStmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
