@@ -2,7 +2,8 @@
 // CREATE [OR REPLACE] FUNCTION statements called by a CREATE TABLE (e.g. in DEFAULT or
 // CHECK expressions) are moved right before that table. CREATE VIEW and ALTER TABLE
 // statements are moved after table definitions, and views are topologically sorted
-// based on their dependencies.
+// based on their dependencies. Statements that depend on a view move together with it,
+// and no statement is moved across a SET statement.
 package reorder
 
 import (
@@ -18,7 +19,10 @@ import (
 // Transformer moves CREATE [OR REPLACE] FUNCTION statements right before the first
 // CREATE TABLE statement that calls them, moves ALTER TABLE and CREATE VIEW statements
 // to the end of the AST, and topologically sorts CREATE VIEW statements based on their
-// dependencies to ensure they are created in the correct order.
+// dependencies to ensure they are created in the correct order. Statements that depend
+// on a view, such as an index on a materialized view or a function returning its row
+// type, are sorted together with the views. Each region between SET statements is
+// reordered separately, since a SET may change how names are resolved.
 type Transformer struct{}
 
 // New creates a new Reorder Transformer.
@@ -29,30 +33,145 @@ func New() *Transformer {
 // Transform implements unipg.Transformer. It reorders the statements in the AST
 // and performs topological sorting on view definitions.
 func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
+	stmts := t.hoistFunctions(tree.Stmts)
+	result := make([]*pg_query.RawStmt, 0, len(stmts))
+
+	start := 0
+	for i := 0; i <= len(stmts); i++ {
+		if i < len(stmts) && stmts[i].Stmt.GetVariableSetStmt() == nil {
+			continue
+		}
+		region, err := t.reorderRegion(stmts[start:i])
+		if err != nil {
+			return err
+		}
+		result = append(result, region...)
+		if i < len(stmts) {
+			result = append(result, stmts[i])
+		}
+		start = i + 1
+	}
+
+	tree.Stmts = result
+	return nil
+}
+
+// reorderRegion reorders the statements between two SET statements. Views and the
+// statements that depend on them, directly or through each other, are sorted and
+// placed after the remaining statements, followed by ALTER TABLE statements.
+func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
 	var regularStmts []*pg_query.RawStmt
 	var alterStmts []*pg_query.RawStmt
-	var viewStmts []*pg_query.RawStmt
+	var lateStmts []*pg_query.RawStmt
 
-	for _, rawStmt := range t.hoistFunctions(tree.Stmts) {
-		switch {
-		case rawStmt.Stmt.GetAlterTableStmt() != nil:
-			alterStmts = append(alterStmts, rawStmt)
-		case rawStmt.Stmt.GetViewStmt() != nil || (rawStmt.Stmt.GetCreateTableAsStmt() != nil && rawStmt.Stmt.GetCreateTableAsStmt().Objtype == pg_query.ObjectType_OBJECT_MATVIEW):
-			viewStmts = append(viewStmts, rawStmt)
-		default:
-			regularStmts = append(regularStmts, rawStmt)
+	lateNames := make(map[string]bool)
+	for _, stmt := range stmts {
+		if isView(stmt) {
+			for _, name := range t.definitions(stmt) {
+				lateNames[name] = true
+			}
 		}
 	}
 
-	sortedViewStmts, err := t.sortViews(viewStmts)
-	if err != nil {
-		return err
+	for _, stmt := range stmts {
+		switch {
+		case stmt.Stmt.GetAlterTableStmt() != nil:
+			alterStmts = append(alterStmts, stmt)
+		case isView(stmt):
+			lateStmts = append(lateStmts, stmt)
+		case slices.ContainsFunc(t.references(stmt), func(name string) bool { return lateNames[name] }):
+			lateStmts = append(lateStmts, stmt)
+			for _, name := range t.definitions(stmt) {
+				lateNames[name] = true
+			}
+		default:
+			regularStmts = append(regularStmts, stmt)
+		}
 	}
 
-	tree.Stmts = append(regularStmts, sortedViewStmts...)
-	tree.Stmts = append(tree.Stmts, alterStmts...)
+	sortedLateStmts, err := t.sortLate(lateStmts)
+	if err != nil {
+		return nil, err
+	}
 
+	result := append(regularStmts, sortedLateStmts...)
+	return append(result, alterStmts...), nil
+}
+
+func isView(stmt *pg_query.RawStmt) bool {
+	if stmt.Stmt.GetViewStmt() != nil {
+		return true
+	}
+	ctas := stmt.Stmt.GetCreateTableAsStmt()
+	return ctas != nil && ctas.Objtype == pg_query.ObjectType_OBJECT_MATVIEW
+}
+
+// Relations and types share a namespace in PostgreSQL (every table and view has a row
+// type of the same name), while functions have their own.
+const (
+	relPrefix  = "rel:"
+	funcPrefix = "func:"
+)
+
+// definitions returns the names of the objects stmt creates that other statements
+// may depend on.
+func (t *Transformer) definitions(stmt *pg_query.RawStmt) []string {
+	switch {
+	case isView(stmt):
+		return []string{relPrefix + t.getViewName(stmt)}
+	case stmt.Stmt.GetCreateStmt() != nil:
+		return []string{relPrefix + t.formatRangeVar(stmt.Stmt.GetCreateStmt().Relation)}
+	case t.getFuncName(stmt) != "":
+		return []string{funcPrefix + t.getFuncName(stmt)}
+	}
 	return nil
+}
+
+// references returns the names of the relations, types and functions stmt refers to,
+// including those in a SQL function body that PostgreSQL resolves at creation time.
+func (t *Transformer) references(stmt *pg_query.RawStmt) []string {
+	roots := []any{stmt.Stmt}
+	if fn := stmt.Stmt.GetCreateFunctionStmt(); fn != nil && fn.SqlBody == nil {
+		if body := t.parseSQLBody(fn); body != nil {
+			roots = append(roots, body)
+		}
+	}
+
+	var refs []string
+	for _, root := range roots {
+		for _, name := range collectNames(root, t.formatRangeVar) {
+			refs = append(refs, relPrefix+name)
+		}
+		for _, name := range collectNames(root, func(tn *pg_query.TypeName) string { return t.formatNameList(tn.Names) }) {
+			refs = append(refs, relPrefix+name)
+		}
+		for _, name := range t.findFuncCalls(root) {
+			refs = append(refs, funcPrefix+name)
+		}
+	}
+
+	if comment := stmt.Stmt.GetCommentStmt(); comment != nil {
+		names := comment.Object.GetList().GetItems()
+		switch comment.Objtype {
+		case pg_query.ObjectType_OBJECT_COLUMN:
+			if len(names) > 0 {
+				refs = append(refs, relPrefix+t.formatNameList(names[:len(names)-1]))
+			}
+		case pg_query.ObjectType_OBJECT_TABLE, pg_query.ObjectType_OBJECT_VIEW, pg_query.ObjectType_OBJECT_MATVIEW:
+			refs = append(refs, relPrefix+t.formatNameList(names))
+		}
+	}
+
+	return refs
+}
+
+// formatNameList formats a qualified name the same way as formatRangeVar.
+func (t *Transformer) formatNameList(nodes []*pg_query.Node) string {
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts = append(parts, node.GetString_().GetSval())
+	}
+	return strings.Join(parts, ".")
 }
 
 // funcNameSep joins the components of a qualified function name. PostgreSQL
@@ -153,7 +272,15 @@ func (t *Transformer) findCreationFuncCalls(fn *pg_query.CreateFunctionStmt) []s
 	if fn.SqlBody != nil {
 		return append(calls, t.findFuncCalls(fn.SqlBody)...)
 	}
+	if body := t.parseSQLBody(fn); body != nil {
+		return append(calls, t.findFuncCalls(body)...)
+	}
+	return calls
+}
 
+// parseSQLBody parses the string body of a LANGUAGE sql function, or returns nil if
+// fn has no such body.
+func (t *Transformer) parseSQLBody(fn *pg_query.CreateFunctionStmt) *pg_query.ParseResult {
 	var language, body string
 	for _, opt := range fn.Options {
 		def := opt.GetDefElem()
@@ -167,14 +294,14 @@ func (t *Transformer) findCreationFuncCalls(fn *pg_query.CreateFunctionStmt) []s
 		}
 	}
 	if language != "sql" {
-		return calls
+		return nil
 	}
 
 	tree, err := pg_query.Parse(body)
 	if err != nil {
-		return calls
+		return nil
 	}
-	return append(calls, t.findFuncCalls(tree)...)
+	return tree
 }
 
 // getFuncName returns the name of a CREATE FUNCTION statement, or "" if stmt is not one.
@@ -195,99 +322,86 @@ func (t *Transformer) formatFuncName(nodes []*pg_query.Node) string {
 	return strings.Join(parts, funcNameSep)
 }
 
-func (t *Transformer) sortViews(viewStmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
-	if len(viewStmts) <= 1 {
-		return viewStmts, nil
-	}
-
-	viewMap := make(map[string]*pg_query.RawStmt)
-	var unnamedViews []*pg_query.RawStmt
-
-	for _, stmt := range viewStmts {
-		name := t.getViewName(stmt)
-		if name != "" {
-			if _, exists := viewMap[name]; exists {
-				return nil, fmt.Errorf("duplicate view statement for %s", name)
+// sortLate topologically sorts views and the statements that depend on them. Views
+// that are ready at the same time are ordered by name, and other statements keep their
+// relative order after them, so the output is deterministic.
+func (t *Transformer) sortLate(stmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
+	keys := make([]string, len(stmts))
+	definers := make(map[string][]int)
+	for i, stmt := range stmts {
+		if isView(stmt) {
+			keys[i] = t.getViewName(stmt)
+			if _, exists := definers[relPrefix+keys[i]]; exists {
+				return nil, fmt.Errorf("duplicate view statement for %s", keys[i])
 			}
-			viewMap[name] = stmt
 		} else {
-			unnamedViews = append(unnamedViews, stmt)
+			// UTF-8 never contains 0xff, so these keys sort after every view name.
+			keys[i] = fmt.Sprintf("\xff%08d", i)
+		}
+		for _, name := range t.definitions(stmt) {
+			definers[name] = append(definers[name], i)
 		}
 	}
 
-	inDegree := make(map[string]int)
-	adjList := make(map[string][]string)
-
-	for name := range viewMap {
-		inDegree[name] = 0
-	}
-
-	for _, stmt := range viewStmts {
-		name := t.getViewName(stmt)
-		if name == "" {
-			continue
-		}
-
-		query := t.getViewQuery(stmt)
-		deps := t.findDependencies(query)
-		for _, dep := range deps {
-			if _, isView := viewMap[dep]; isView && dep != name {
-				adjList[dep] = append(adjList[dep], name)
-				inDegree[name]++
+	inDegree := make([]int, len(stmts))
+	dependents := make([][]int, len(stmts))
+	for i, stmt := range stmts {
+		for _, ref := range t.references(stmt) {
+			for _, j := range definers[ref] {
+				if j != i {
+					dependents[j] = append(dependents[j], i)
+					inDegree[i]++
+				}
 			}
 		}
 	}
 
-	// For deterministic output, sort names initially
-	var allNames []string
-	for name := range inDegree {
-		allNames = append(allNames, name)
-	}
-	sort.Strings(allNames)
-
-	var queue []string
-	for _, name := range allNames {
-		if inDegree[name] == 0 {
-			queue = append(queue, name)
+	byKey := func(a, b int) int { return strings.Compare(keys[a], keys[b]) }
+	var ready []int
+	for i := range stmts {
+		if inDegree[i] == 0 {
+			ready = append(ready, i)
 		}
 	}
 
-	var sortedViewNames []string
-	for len(queue) > 0 {
-		// Sort queue to maintain deterministic behavior at each step
-		sort.Strings(queue)
-		curr := queue[0]
-		queue = queue[1:]
-		sortedViewNames = append(sortedViewNames, curr)
+	result := make([]*pg_query.RawStmt, 0, len(stmts))
+	for len(ready) > 0 {
+		slices.SortFunc(ready, byKey)
+		curr := ready[0]
+		ready = ready[1:]
+		result = append(result, stmts[curr])
 
-		dependents := adjList[curr]
-		sort.Strings(dependents)
-		for _, dependent := range dependents {
+		for _, dependent := range dependents[curr] {
 			inDegree[dependent]--
 			if inDegree[dependent] == 0 {
-				queue = append(queue, dependent)
+				ready = append(ready, dependent)
 			}
 		}
 	}
 
-	if len(sortedViewNames) != len(viewMap) {
+	if len(result) != len(stmts) {
 		var remaining []string
-		for name, degree := range inDegree {
+		for i, degree := range inDegree {
 			if degree > 0 {
-				remaining = append(remaining, name)
+				remaining = append(remaining, t.describe(stmts[i], keys[i]))
 			}
 		}
 		sort.Strings(remaining)
 		return nil, fmt.Errorf("circular dependency detected among views: %s", strings.Join(remaining, ", "))
 	}
 
-	result := make([]*pg_query.RawStmt, 0, len(sortedViewNames)+len(unnamedViews))
-	for _, name := range sortedViewNames {
-		result = append(result, viewMap[name])
-	}
-	result = append(result, unnamedViews...)
-
 	return result, nil
+}
+
+// describe names stmt for error messages, preferring the view name in key.
+func (t *Transformer) describe(stmt *pg_query.RawStmt, key string) string {
+	if isView(stmt) {
+		return key
+	}
+	if defs := t.definitions(stmt); len(defs) > 0 {
+		return strings.TrimPrefix(strings.TrimPrefix(defs[0], relPrefix), funcPrefix)
+	}
+	return "statement at offset " + fmt.Sprint(stmt.StmtLocation)
 }
 
 func (t *Transformer) getViewName(stmt *pg_query.RawStmt) string {
@@ -302,16 +416,6 @@ func (t *Transformer) getViewName(stmt *pg_query.RawStmt) string {
 	return ""
 }
 
-func (t *Transformer) getViewQuery(stmt *pg_query.RawStmt) *pg_query.Node {
-	if viewNode := stmt.Stmt.GetViewStmt(); viewNode != nil {
-		return viewNode.Query
-	}
-	if matViewNode := stmt.Stmt.GetCreateTableAsStmt(); matViewNode != nil {
-		return matViewNode.Query
-	}
-	return nil
-}
-
 func (t *Transformer) formatRangeVar(rv *pg_query.RangeVar) string {
 	if rv == nil {
 		return ""
@@ -320,10 +424,6 @@ func (t *Transformer) formatRangeVar(rv *pg_query.RangeVar) string {
 		return rv.Schemaname + "." + rv.Relname
 	}
 	return rv.Relname
-}
-
-func (t *Transformer) findDependencies(node *pg_query.Node) []string {
-	return collectNames(node, t.formatRangeVar)
 }
 
 func (t *Transformer) findFuncCalls(node any) []string {

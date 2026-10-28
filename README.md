@@ -105,6 +105,7 @@ Converts JavaDoc-style comments (`/** ... */`) into PostgreSQL DDL comments (`CO
 
 Extracts inline foreign keys into standalone `ALTER TABLE` statements and reorders them to the bottom.
 `reorder` transformer also moves `CREATE VIEW` statements to the bottom and `CREATE [OR REPLACE] FUNCTION` statements called by a `CREATE TABLE` (e.g. in `DEFAULT` or `CHECK` expressions) right before that table. Other functions are left in place.
+Statements that depend on a view (e.g. an index on a materialized view or a function returning its row type) move together with it, and no statement is moved across a `SET` statement.
 
 By using them together, you can ensure that all `CREATE TABLE` statements are defined before any `ADD FOREIGN KEY` statements, so you don't have to worry about dependency order.
 
