@@ -563,11 +563,35 @@ func TestTransformer_Transform(t *testing.T) {
 			CREATE TYPE "a.v" AS ENUM ('x');
 			CREATE FUNCTION f(arg "a.v") RETURNS INT LANGUAGE sql RETURN 1;
 			CREATE VIEW a.v AS SELECT f('x'::"a.v") AS x;`,
+			"function bodies unchecked with quoted zero": `SET check_function_bodies = '0';
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT x FROM v $$ LANGUAGE sql;
+			CREATE VIEW v AS SELECT f() AS x;`,
+			"procedure comment": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE PROCEDURE p() LANGUAGE sql BEGIN ATOMIC SELECT x FROM v; END;
+			COMMENT ON PROCEDURE p() IS 'doc';`,
+			"column type reference": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION f() RETURNS v.x%TYPE LANGUAGE sql RETURN 1;`,
 		} {
 			t.Run(name, func(t *testing.T) {
 				requireUnchanged(t, transformer, input)
 			})
 		}
+	})
+
+	t.Run("keep redefinitions after a definition moved in a later pass", func(t *testing.T) {
+		requireOrder(t, transformer, `
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN g();
+			CREATE OR REPLACE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 2;
+			CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+			CREATE OR REPLACE FUNCTION f() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+		`, `
+			CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN g();
+			CREATE OR REPLACE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 2;
+			CREATE OR REPLACE FUNCTION f() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+		`)
 	})
 
 	t.Run("keep generated type comments after their type", func(t *testing.T) {
@@ -634,8 +658,14 @@ func funcName(stmt *pg_query.RawStmt) string {
 // requireUnchanged asserts that transforming input keeps the statement order.
 func requireUnchanged(t *testing.T, transformer *Transformer, input string) {
 	t.Helper()
+	requireOrder(t, transformer, input, input)
+}
 
-	expected, err := pg_query.Parse(input)
+// requireOrder asserts that transforming input yields the statements of expected.
+func requireOrder(t *testing.T, transformer *Transformer, input, expectedSQL string) {
+	t.Helper()
+
+	expected, err := pg_query.Parse(expectedSQL)
 	require.NoError(t, err)
 	want, err := pg_query.Deparse(expected)
 	require.NoError(t, err)
