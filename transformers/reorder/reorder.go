@@ -8,6 +8,7 @@ package reorder
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -61,7 +62,8 @@ const funcNameSep = "\x00"
 // hoistFunctions moves a CREATE FUNCTION statement right before the first
 // CREATE TABLE that calls it, if that table precedes every definition of the
 // function. Only the first such definition is moved, together with the functions
-// its SQL body calls that are defined between the table and itself. Other functions
+// it calls at creation time that are defined between the table and itself, even if
+// they were already moved before a later table. Other functions
 // are left in place, since they may depend on tables or types defined before them
 // (e.g. RETURNS SETOF <table> or a LANGUAGE sql body reading a table).
 //
@@ -71,13 +73,21 @@ func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawS
 	defined := make(map[string]int)
 	firstCaller := make(map[string]int)
 	hoisted := make(map[int][]*pg_query.RawStmt)
-	moved := make(map[int]bool)
+	dest := make(map[int]int)
 
 	var hoist func(i, target int)
 	hoist = func(i, target int) {
-		moved[i] = true
-		for _, dep := range t.findBodyFuncCalls(stmts[i].Stmt.GetCreateFunctionStmt()) {
-			if j, ok := defined[dep]; ok && j > target && !moved[j] {
+		if prev, ok := dest[i]; ok {
+			if prev <= target {
+				return
+			}
+			hoisted[prev] = slices.DeleteFunc(hoisted[prev], func(s *pg_query.RawStmt) bool {
+				return s == stmts[i]
+			})
+		}
+		dest[i] = target
+		for _, dep := range t.findCreationFuncCalls(stmts[i].Stmt.GetCreateFunctionStmt()) {
+			if j, ok := defined[dep]; ok && j > target {
 				hoist(j, target)
 			}
 		}
@@ -120,13 +130,13 @@ func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawS
 		}
 	}
 
-	if len(moved) == 0 {
+	if len(dest) == 0 {
 		return stmts
 	}
 
 	result := make([]*pg_query.RawStmt, 0, len(stmts))
 	for i, stmt := range stmts {
-		if moved[i] {
+		if _, ok := dest[i]; ok {
 			continue
 		}
 		result = append(result, hoisted[i]...)
@@ -135,12 +145,13 @@ func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawS
 	return result
 }
 
-// findBodyFuncCalls returns the functions called by a SQL function body, which
-// PostgreSQL resolves at creation time. Bodies in other languages are not checked
-// until they run, so they impose no ordering.
-func (t *Transformer) findBodyFuncCalls(fn *pg_query.CreateFunctionStmt) []string {
+// findCreationFuncCalls returns the functions that PostgreSQL resolves when creating
+// fn: those called by parameter defaults and by a SQL function body. Bodies in other
+// languages are not checked until they run, so they impose no ordering.
+func (t *Transformer) findCreationFuncCalls(fn *pg_query.CreateFunctionStmt) []string {
+	calls := t.findFuncCalls(fn.Parameters)
 	if fn.SqlBody != nil {
-		return t.findFuncCalls(fn.SqlBody)
+		return append(calls, t.findFuncCalls(fn.SqlBody)...)
 	}
 
 	var language, body string
@@ -156,14 +167,14 @@ func (t *Transformer) findBodyFuncCalls(fn *pg_query.CreateFunctionStmt) []strin
 		}
 	}
 	if language != "sql" {
-		return nil
+		return calls
 	}
 
 	tree, err := pg_query.Parse(body)
 	if err != nil {
-		return nil
+		return calls
 	}
-	return t.findFuncCalls(tree)
+	return append(calls, t.findFuncCalls(tree)...)
 }
 
 // getFuncName returns the name of a CREATE FUNCTION statement, or "" if stmt is not one.

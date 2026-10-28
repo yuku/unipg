@@ -368,6 +368,46 @@ func TestTransformer_Transform(t *testing.T) {
 		}
 	})
 
+	t.Run("move functions called from parameter defaults of a moved function", func(t *testing.T) {
+		input := `
+			CREATE TABLE t (x INT DEFAULT f());
+			CREATE FUNCTION helper() RETURNS INT LANGUAGE sql RETURN 1;
+			CREATE FUNCTION f(x INT DEFAULT helper()) RETURNS INT LANGUAGE sql RETURN x;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: helper, f, t
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "helper", funcName(result.Stmts[0]))
+		require.Equal(t, "f", funcName(result.Stmts[1]))
+		require.NotNil(t, result.Stmts[2].Stmt.GetCreateStmt())
+	})
+
+	t.Run("move an already moved dependency before an earlier caller", func(t *testing.T) {
+		input := `
+			CREATE TABLE t1 (x INT DEFAULT f());
+			CREATE TABLE t2 (x INT DEFAULT helper());
+			CREATE FUNCTION helper() RETURNS INT LANGUAGE sql RETURN 1;
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN helper();
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: helper, f, t1, t2
+		require.Len(t, result.Stmts, 4)
+		require.Equal(t, "helper", funcName(result.Stmts[0]))
+		require.Equal(t, "f", funcName(result.Stmts[1]))
+		require.Equal(t, "t1", result.Stmts[2].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "t2", result.Stmts[3].Stmt.GetCreateStmt().Relation.Relname)
+	})
+
 	t.Run("do not confuse qualified names with quoted names containing a dot", func(t *testing.T) {
 		input := `
 			CREATE TABLE t (x INT DEFAULT app.f());
