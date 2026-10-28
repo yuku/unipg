@@ -75,7 +75,7 @@ func (t *Transformer) reorderRegion(stmts []*pg_query.RawStmt, checkBodies bool)
 	markLate := func(i int) {
 		late[i] = true
 		for _, name := range defs[i] {
-			if _, ok := firstLateDef[name]; !ok {
+			if j, ok := firstLateDef[name]; !ok || i < j {
 				firstLateDef[name] = i
 			}
 		}
@@ -147,7 +147,7 @@ func checksFunctionBodies(set *pg_query.VariableSetStmt, current bool) bool {
 	}
 	// PostgreSQL accepts any unambiguous prefix of a boolean keyword.
 	v := strings.ToLower(value.GetSval().GetSval())
-	off := v != "" && (strings.HasPrefix("false", v) || strings.HasPrefix("no", v) || (len(v) >= 2 && strings.HasPrefix("off", v)))
+	off := v == "0" || v != "" && (strings.HasPrefix("false", v) || strings.HasPrefix("no", v) || (len(v) >= 2 && strings.HasPrefix("off", v)))
 	return !off
 }
 
@@ -188,8 +188,8 @@ func (t *Transformer) definitions(stmt *pg_query.RawStmt) []string {
 			Schemaname: index.GetRelation().GetSchemaname(),
 			Relname:    index.Idxname,
 		})}
-	case t.getFuncName(stmt) != "":
-		return []string{funcPrefix + t.getFuncName(stmt)}
+	case stmt.Stmt.GetCreateFunctionStmt() != nil:
+		return []string{funcPrefix + t.formatNameList(stmt.Stmt.GetCreateFunctionStmt().Funcname)}
 	}
 	return nil
 }
@@ -216,7 +216,7 @@ func (t *Transformer) references(stmt *pg_query.RawStmt, checkBodies bool) []str
 				refs = append(refs, relPrefix+name)
 			}
 		}
-		for _, name := range collectNames(root, func(tn *pg_query.TypeName) string { return t.formatNameList(tn.Names) }) {
+		for _, name := range collectNames(root, t.typeKey) {
 			refs = append(refs, relPrefix+name)
 		}
 		for _, name := range t.findFuncCalls(root) {
@@ -243,6 +243,16 @@ func (t *Transformer) references(stmt *pg_query.RawStmt, checkBodies bool) []str
 	}
 
 	return refs
+}
+
+// typeKey returns the key of the relation or type tn refers to. A %TYPE reference
+// names a column, so its last component is dropped.
+func (t *Transformer) typeKey(tn *pg_query.TypeName) string {
+	names := tn.Names
+	if tn.PctType && len(names) > 1 {
+		names = names[:len(names)-1]
+	}
+	return t.formatNameList(names)
 }
 
 // nameSep joins the components of a qualified name in keys. PostgreSQL identifiers
