@@ -435,6 +435,95 @@ func TestTransformer_Transform(t *testing.T) {
 		require.Equal(t, "v", result.Stmts[2].Stmt.GetViewStmt().View.Relname)
 	})
 
+	t.Run("keep statements that depend on a view after it", func(t *testing.T) {
+		for _, input := range []string{
+			`CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS SETOF v LANGUAGE sql BEGIN ATOMIC SELECT * FROM v; END;`,
+			`CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS INT AS $$ SELECT x FROM v $$ LANGUAGE sql;`,
+			`CREATE TABLE t (id INT);
+			CREATE MATERIALIZED VIEW mv AS SELECT id FROM t;
+			CREATE UNIQUE INDEX mv_id ON mv (id);`,
+			`CREATE VIEW v AS SELECT 1 AS x;
+			COMMENT ON VIEW v IS 'hello';
+			COMMENT ON COLUMN v.x IS 'world';`,
+			`CREATE VIEW v AS SELECT 1 AS x;
+			GRANT SELECT ON v TO r;`,
+			`CREATE VIEW v AS SELECT 1 AS x;
+			CREATE TABLE t (y v);`,
+			`CREATE FUNCTION tf() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+			CREATE VIEW v AS SELECT 1 AS x;
+			CREATE TRIGGER tr INSTEAD OF INSERT ON v FOR EACH ROW EXECUTE FUNCTION tf();`,
+		} {
+			requireUnchanged(t, transformer, input)
+		}
+	})
+
+	t.Run("move statements that depend on a view together with it", func(t *testing.T) {
+		input := `
+			CREATE MATERIALIZED VIEW mv AS SELECT id FROM t;
+			CREATE INDEX mv_id ON mv (id);
+			CREATE TABLE t (id INT);
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: t, mv, index
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "t", result.Stmts[0].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "mv", result.Stmts[1].Stmt.GetCreateTableAsStmt().Into.Rel.Relname)
+		require.Equal(t, "mv_id", result.Stmts[2].Stmt.GetIndexStmt().Idxname)
+	})
+
+	t.Run("sort views and their dependents together", func(t *testing.T) {
+		input := `
+			CREATE VIEW v2 AS SELECT * FROM g();
+			CREATE VIEW v1 AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS SETOF v1 LANGUAGE sql BEGIN ATOMIC SELECT * FROM v1; END;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: v1, g, v2
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "v1", result.Stmts[0].Stmt.GetViewStmt().View.Relname)
+		require.Equal(t, "g", funcName(result.Stmts[1]))
+		require.Equal(t, "v2", result.Stmts[2].Stmt.GetViewStmt().View.Relname)
+	})
+
+	t.Run("do not move views and alters across set statements", func(t *testing.T) {
+		input := `
+			SET search_path = a;
+			CREATE VIEW v AS SELECT f() AS x;
+			ALTER TABLE t ADD COLUMN y INT;
+			CREATE TABLE t (id INT);
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 1;
+			SET search_path = b;
+			CREATE TABLE u (id INT);
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: SET a, t, f, v, ALTER t, SET b, u
+		require.Len(t, result.Stmts, 7)
+		require.NotNil(t, result.Stmts[0].Stmt.GetVariableSetStmt())
+		require.Equal(t, "t", result.Stmts[1].Stmt.GetCreateStmt().Relation.Relname)
+		require.Equal(t, "f", funcName(result.Stmts[2]))
+		require.Equal(t, "v", result.Stmts[3].Stmt.GetViewStmt().View.Relname)
+		require.NotNil(t, result.Stmts[4].Stmt.GetAlterTableStmt())
+		require.NotNil(t, result.Stmts[5].Stmt.GetVariableSetStmt())
+		require.Equal(t, "u", result.Stmts[6].Stmt.GetCreateStmt().Relation.Relname)
+	})
+
 	t.Run("do not move create or replace procedure", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT);
