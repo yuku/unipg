@@ -524,6 +524,53 @@ func TestTransformer_Transform(t *testing.T) {
 		require.Equal(t, "u", result.Stmts[6].Stmt.GetCreateStmt().Relation.Relname)
 	})
 
+	t.Run("keep valid view dependency chains unchanged", func(t *testing.T) {
+		for name, input := range map[string]string{
+			"composite type": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE TYPE wrapper AS (item v);
+			CREATE TABLE t (item wrapper);`,
+			"domain": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE DOMAIN d AS v;
+			CREATE TABLE t (item d);`,
+			"create table as": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE TABLE t AS SELECT * FROM v;
+			CREATE INDEX t_x ON t (x);`,
+			"function comment and grant": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+			COMMENT ON FUNCTION f() IS 'doc';
+			GRANT EXECUTE ON FUNCTION f() TO r;`,
+			"cte named like a view": `CREATE FUNCTION f() RETURNS INT LANGUAGE sql BEGIN ATOMIC WITH v AS (SELECT 1 AS x) SELECT x FROM v; END;
+			CREATE VIEW v AS SELECT f() AS x;`,
+			"overloads": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION f() RETURNS SETOF v LANGUAGE sql BEGIN ATOMIC SELECT * FROM v; END;
+			CREATE VIEW w AS SELECT * FROM f();
+			CREATE FUNCTION f(arg w) RETURNS INT LANGUAGE sql RETURN 1;`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				requireUnchanged(t, transformer, input)
+			})
+		}
+	})
+
+	t.Run("move earlier indirect dependents of a view", func(t *testing.T) {
+		input := `
+			CREATE FUNCTION h() RETURNS INT LANGUAGE sql RETURN g();
+			CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION g() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: v, g, h
+		require.Len(t, result.Stmts, 3)
+		require.Equal(t, "v", result.Stmts[0].Stmt.GetViewStmt().GetView().GetRelname())
+		require.Equal(t, "g", funcName(result.Stmts[1]))
+		require.Equal(t, "h", funcName(result.Stmts[2]))
+	})
+
 	t.Run("do not move create or replace procedure", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT);
