@@ -5,6 +5,8 @@ import (
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 	"github.com/stretchr/testify/require"
+	"github.com/yuku/unipg/parsers/text"
+	"github.com/yuku/unipg/transformers/comment"
 )
 
 func TestTransformer_Transform(t *testing.T) {
@@ -545,11 +547,46 @@ func TestTransformer_Transform(t *testing.T) {
 			CREATE FUNCTION f() RETURNS SETOF v LANGUAGE sql BEGIN ATOMIC SELECT * FROM v; END;
 			CREATE VIEW w AS SELECT * FROM f();
 			CREATE FUNCTION f(arg w) RETURNS INT LANGUAGE sql RETURN 1;`,
+			"overload preceding the view": `CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 1;
+			CREATE VIEW v AS SELECT f() AS x;
+			CREATE FUNCTION f(arg v) RETURNS INT LANGUAGE sql RETURN 1;`,
+			"successive definitions": `CREATE VIEW v AS SELECT 1 AS x;
+			CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN (SELECT x FROM v);
+			CREATE OR REPLACE FUNCTION f() RETURNS INT LANGUAGE sql RETURN 2;`,
+			"index comment": `CREATE MATERIALIZED VIEW mv AS SELECT 1 AS x;
+			CREATE INDEX mv_x ON mv (x);
+			COMMENT ON INDEX mv_x IS 'doc';`,
+			"unchecked function bodies": `SET check_function_bodies = false;
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT x FROM v $$ LANGUAGE sql;
+			CREATE VIEW v AS SELECT f() AS x;`,
+			"quoted name containing a dot": `CREATE SCHEMA a;
+			CREATE TYPE "a.v" AS ENUM ('x');
+			CREATE FUNCTION f(arg "a.v") RETURNS INT LANGUAGE sql RETURN 1;
+			CREATE VIEW a.v AS SELECT f('x'::"a.v") AS x;`,
 		} {
 			t.Run(name, func(t *testing.T) {
 				requireUnchanged(t, transformer, input)
 			})
 		}
+	})
+
+	t.Run("keep generated type comments after their type", func(t *testing.T) {
+		result, err := text.New().Parse(`
+			CREATE VIEW v AS SELECT 1 AS x;
+			/** doc */
+			CREATE TYPE wrapper AS (item v);
+		`)
+		require.NoError(t, err)
+		require.NoError(t, comment.New().Transform(result))
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: v, wrapper, COMMENT ON TYPE wrapper
+		require.Len(t, result.Stmts, 3)
+		require.NotNil(t, result.Stmts[0].Stmt.GetViewStmt())
+		require.NotNil(t, result.Stmts[1].Stmt.GetCompositeTypeStmt())
+		require.Equal(t, pg_query.ObjectType_OBJECT_TYPE, result.Stmts[2].Stmt.GetCommentStmt().GetObjtype())
 	})
 
 	t.Run("move earlier indirect dependents of a view", func(t *testing.T) {
