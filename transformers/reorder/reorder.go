@@ -54,39 +54,70 @@ func (t *Transformer) Transform(tree *pg_query.ParseResult) error {
 	return nil
 }
 
-// hoistFunctions moves each CREATE FUNCTION statement right before the first
-// CREATE TABLE that calls it, if that table precedes the function. Other functions
+// funcNameSep joins the components of a qualified function name. PostgreSQL
+// identifiers cannot contain NUL, so app.f and "app.f" never share a key.
+const funcNameSep = "\x00"
+
+// hoistFunctions moves a CREATE FUNCTION statement right before the first
+// CREATE TABLE that calls it, if that table precedes every definition of the
+// function. Only the first such definition is moved, together with the functions
+// its SQL body calls that are defined between the table and itself. Other functions
 // are left in place, since they may depend on tables or types defined before them
 // (e.g. RETURNS SETOF <table> or a LANGUAGE sql body reading a table).
-// A function is not moved across a SET statement, as that could change the
-// search_path or other settings it is created under.
+//
+// A SET statement starts a new region: functions are never moved across it, and
+// unqualified names defined before it may resolve to other functions after it.
 func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawStmt {
+	defined := make(map[string]int)
 	firstCaller := make(map[string]int)
-	for i, stmt := range stmts {
-		createStmt := stmt.Stmt.GetCreateStmt()
-		if createStmt == nil {
-			continue
-		}
-		for _, name := range t.findFuncCalls(createStmt) {
-			if _, exists := firstCaller[name]; !exists {
-				firstCaller[name] = i
-			}
-		}
-	}
-
 	hoisted := make(map[int][]*pg_query.RawStmt)
 	moved := make(map[int]bool)
+
+	var hoist func(i, target int)
+	hoist = func(i, target int) {
+		moved[i] = true
+		for _, dep := range t.findBodyFuncCalls(stmts[i].Stmt.GetCreateFunctionStmt()) {
+			if j, ok := defined[dep]; ok && j > target && !moved[j] {
+				hoist(j, target)
+			}
+		}
+		hoisted[target] = append(hoisted[target], stmts[i])
+	}
+
 	for i, stmt := range stmts {
+		if stmt.Stmt.GetVariableSetStmt() != nil {
+			clear(firstCaller)
+			for name := range defined {
+				if !strings.Contains(name, funcNameSep) {
+					delete(defined, name)
+				}
+			}
+			continue
+		}
+
+		if createStmt := stmt.Stmt.GetCreateStmt(); createStmt != nil {
+			for _, name := range t.findFuncCalls(createStmt) {
+				if _, ok := defined[name]; ok {
+					continue
+				}
+				if _, ok := firstCaller[name]; !ok {
+					firstCaller[name] = i
+				}
+			}
+			continue
+		}
+
 		name := t.getFuncName(stmt)
 		if name == "" {
 			continue
 		}
-		target, ok := firstCaller[name]
-		if !ok || target > i || containsSetStmt(stmts[target:i]) {
-			continue
+		if _, ok := defined[name]; !ok {
+			defined[name] = i
 		}
-		hoisted[target] = append(hoisted[target], stmt)
-		moved[i] = true
+		if target, ok := firstCaller[name]; ok {
+			delete(firstCaller, name)
+			hoist(i, target)
+		}
 	}
 
 	if len(moved) == 0 {
@@ -104,13 +135,35 @@ func (t *Transformer) hoistFunctions(stmts []*pg_query.RawStmt) []*pg_query.RawS
 	return result
 }
 
-func containsSetStmt(stmts []*pg_query.RawStmt) bool {
-	for _, stmt := range stmts {
-		if stmt.Stmt.GetVariableSetStmt() != nil {
-			return true
+// findBodyFuncCalls returns the functions called by a SQL function body, which
+// PostgreSQL resolves at creation time. Bodies in other languages are not checked
+// until they run, so they impose no ordering.
+func (t *Transformer) findBodyFuncCalls(fn *pg_query.CreateFunctionStmt) []string {
+	if fn.SqlBody != nil {
+		return t.findFuncCalls(fn.SqlBody)
+	}
+
+	var language, body string
+	for _, opt := range fn.Options {
+		def := opt.GetDefElem()
+		switch def.GetDefname() {
+		case "language":
+			language = def.Arg.GetString_().GetSval()
+		case "as":
+			if items := def.Arg.GetList().GetItems(); len(items) > 0 {
+				body = items[0].GetString_().GetSval()
+			}
 		}
 	}
-	return false
+	if language != "sql" {
+		return nil
+	}
+
+	tree, err := pg_query.Parse(body)
+	if err != nil {
+		return nil
+	}
+	return t.findFuncCalls(tree)
 }
 
 // getFuncName returns the name of a CREATE FUNCTION statement, or "" if stmt is not one.
@@ -128,7 +181,7 @@ func (t *Transformer) formatFuncName(nodes []*pg_query.Node) string {
 	for _, node := range nodes {
 		parts = append(parts, node.GetString_().GetSval())
 	}
-	return strings.Join(parts, ".")
+	return strings.Join(parts, funcNameSep)
 }
 
 func (t *Transformer) sortViews(viewStmts []*pg_query.RawStmt) ([]*pg_query.RawStmt, error) {
@@ -262,7 +315,7 @@ func (t *Transformer) findDependencies(node *pg_query.Node) []string {
 	return collectNames(node, t.formatRangeVar)
 }
 
-func (t *Transformer) findFuncCalls(node *pg_query.CreateStmt) []string {
+func (t *Transformer) findFuncCalls(node any) []string {
 	return collectNames(node, func(fc *pg_query.FuncCall) string {
 		return t.formatFuncName(fc.Funcname)
 	})

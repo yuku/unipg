@@ -292,6 +292,90 @@ func TestTransformer_Transform(t *testing.T) {
 		require.Equal(t, "other", result.Stmts[2].Stmt.GetCreateFunctionStmt().Funcname[0].GetString_().Sval)
 	})
 
+	t.Run("do not move function already defined before its caller", func(t *testing.T) {
+		input := `
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+			CREATE TABLE t (x INT DEFAULT f());
+			CREATE OR REPLACE FUNCTION f() RETURNS INT BEGIN ATOMIC SELECT count(*)::int FROM t; END;
+			CREATE FUNCTION f(arg t) RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+		`
+		requireUnchanged(t, transformer, input)
+	})
+
+	t.Run("move only the first definition after the caller", func(t *testing.T) {
+		input := `
+			CREATE TABLE t (x INT DEFAULT f());
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+			CREATE FUNCTION f(arg t) RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		require.Len(t, result.Stmts, 3)
+		require.Empty(t, result.Stmts[0].Stmt.GetCreateFunctionStmt().Parameters)
+		require.NotNil(t, result.Stmts[1].Stmt.GetCreateStmt())
+		require.Len(t, result.Stmts[2].Stmt.GetCreateFunctionStmt().Parameters, 1)
+	})
+
+	t.Run("move functions within each set statement region", func(t *testing.T) {
+		input := `
+			SET search_path = a;
+			CREATE TABLE t1 (x INT DEFAULT f());
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+			SET search_path = b;
+			CREATE TABLE t2 (x INT DEFAULT f());
+			CREATE FUNCTION f() RETURNS INT AS $$ SELECT 2 $$ LANGUAGE sql;
+		`
+		result, err := pg_query.Parse(input)
+		require.NoError(t, err)
+
+		err = transformer.Transform(result)
+		require.NoError(t, err)
+
+		// Expected: SET a, f, t1, SET b, f, t2
+		require.Len(t, result.Stmts, 6)
+		require.NotNil(t, result.Stmts[0].Stmt.GetVariableSetStmt())
+		require.Equal(t, "f", funcName(result.Stmts[1]))
+		require.Equal(t, "t1", result.Stmts[2].Stmt.GetCreateStmt().Relation.Relname)
+		require.NotNil(t, result.Stmts[3].Stmt.GetVariableSetStmt())
+		require.Equal(t, "f", funcName(result.Stmts[4]))
+		require.Equal(t, "t2", result.Stmts[5].Stmt.GetCreateStmt().Relation.Relname)
+	})
+
+	t.Run("move functions called from the body of a moved function", func(t *testing.T) {
+		for _, f := range []string{
+			"CREATE FUNCTION f() RETURNS INT LANGUAGE sql RETURN helper();",
+			"CREATE FUNCTION f() RETURNS INT AS $$ SELECT helper() $$ LANGUAGE sql;",
+		} {
+			input := `
+				CREATE TABLE t (x INT DEFAULT f());
+				CREATE FUNCTION helper() RETURNS INT LANGUAGE sql RETURN 1;
+			` + f
+			result, err := pg_query.Parse(input)
+			require.NoError(t, err)
+
+			err = transformer.Transform(result)
+			require.NoError(t, err)
+
+			// Expected: helper, f, t
+			require.Len(t, result.Stmts, 3)
+			require.Equal(t, "helper", funcName(result.Stmts[0]))
+			require.Equal(t, "f", funcName(result.Stmts[1]))
+			require.NotNil(t, result.Stmts[2].Stmt.GetCreateStmt())
+		}
+	})
+
+	t.Run("do not confuse qualified names with quoted names containing a dot", func(t *testing.T) {
+		input := `
+			CREATE TABLE t (x INT DEFAULT app.f());
+			CREATE FUNCTION "app.f"() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;
+		`
+		requireUnchanged(t, transformer, input)
+	})
+
 	t.Run("do not move create or replace procedure", func(t *testing.T) {
 		input := `
 			CREATE TABLE users (id INT);
@@ -313,4 +397,22 @@ func TestTransformer_Transform(t *testing.T) {
 func funcName(stmt *pg_query.RawStmt) string {
 	names := stmt.Stmt.GetCreateFunctionStmt().Funcname
 	return names[len(names)-1].GetString_().Sval
+}
+
+// requireUnchanged asserts that transforming input keeps the statement order.
+func requireUnchanged(t *testing.T, transformer *Transformer, input string) {
+	t.Helper()
+
+	expected, err := pg_query.Parse(input)
+	require.NoError(t, err)
+	want, err := pg_query.Deparse(expected)
+	require.NoError(t, err)
+
+	result, err := pg_query.Parse(input)
+	require.NoError(t, err)
+	require.NoError(t, transformer.Transform(result))
+	got, err := pg_query.Deparse(result)
+	require.NoError(t, err)
+
+	require.Equal(t, want, got)
 }
